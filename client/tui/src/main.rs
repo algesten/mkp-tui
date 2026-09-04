@@ -32,7 +32,11 @@ struct NoopTrace;
 impl mkpclient_runtime::Trace for NoopTrace {}
 
 #[derive(Parser, Debug)]
-#[command(name = "mkp", about = "Make Play TUI client")]
+#[command(
+    name = "mkp",
+    version = env!("MKP_VERSION"),
+    about = "Make Play TUI client"
+)]
 struct Cli {
     /// Skip auto-reconnect to the previously used server and go
     /// straight to the server picker.
