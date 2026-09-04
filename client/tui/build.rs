@@ -17,10 +17,12 @@
 //! workspace are not the marketing version and are not bumped per
 //! release. See the release flow in the closed repo's Makefile.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=MKP_VERSION");
+    emit_git_rerun_triggers();
 
     let version = std::env::var("MKP_VERSION")
         .ok()
@@ -29,6 +31,50 @@ fn main() {
         .unwrap_or_else(|| "dev".to_string());
 
     println!("cargo:rustc-env=MKP_VERSION={version}");
+}
+
+/// Re-run this script when the git state `git describe` reads could
+/// have moved: a new commit, a checkout, a fetch, or a tag being
+/// created or deleted.
+///
+/// `refs` covers both `refs/heads/*` (so the `-N-gsha` suffix tracks
+/// new commits) and `refs/tags/*`; `packed-refs` covers the same
+/// after a `git gc` or a fresh clone has packed them away.
+///
+/// Resolved via `--absolute-git-dir` so this works when `.git` is a
+/// file rather than a directory — a submodule, a worktree, or the
+/// checkout `cargo install --git` makes. Emits nothing outside a git
+/// tree, and skips paths that do not exist: naming a missing file in
+/// `rerun-if-changed` makes cargo consider it stale on every build.
+fn emit_git_rerun_triggers() {
+    let Some(git_dir) = git_dir() else {
+        return;
+    };
+
+    for entry in ["HEAD", "refs", "packed-refs"] {
+        let path = git_dir.join(entry);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
+fn git_dir() -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .ok()?;
+
+    if !out.status.success() {
+        return None;
+    }
+
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if dir.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(dir))
+    }
 }
 
 fn git_describe() -> Option<String> {
