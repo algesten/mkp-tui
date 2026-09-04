@@ -5,8 +5,12 @@
 //! 1. `MKP_VERSION` — set by `make release` and by every packaging
 //!    recipe (AUR `pkgver`, the Homebrew formula, the nix flake),
 //!    all of which already know the version they are building.
-//! 2. `git describe --tags --abbrev=0` — a development clone with
-//!    the release tag propagated into it.
+//! 2. `git describe --tags` — a development clone with the release
+//!    tag propagated into it. Left un-abbreviated on purpose: a
+//!    checkout sitting on the tag reports a bare `1.0.0`, while one
+//!    five commits past it reports `1.0.0-5-gabc1234` rather than
+//!    claiming to be the release. That distinction matters most for
+//!    `cargo install --git`, which tracks the default branch.
 //! 3. `"dev"` — a bare source tarball with no packaging around it.
 //!
 //! Deliberately NOT `CARGO_PKG_VERSION`: the crate versions in this
@@ -29,7 +33,7 @@ fn main() {
 
 fn git_describe() -> Option<String> {
     let out = Command::new("git")
-        .args(["describe", "--tags", "--abbrev=0"])
+        .args(["describe", "--tags"])
         .output()
         .ok()?;
 
