@@ -41,7 +41,7 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve version
         id: version
@@ -92,12 +92,14 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # Ships as a download; debug symbols roughly triple the size.
+          strip "target/${{ matrix.target }}/release/mkp"
           NAME="mkp-$VERSION-${{ matrix.target }}.tar.gz"
           tar -czf "$NAME" -C "target/${{ matrix.target }}/release" mkp
           sha256sum "$NAME" | tee "$NAME.sha256"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.target }}
           path: |
@@ -111,7 +113,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
           path: dist
