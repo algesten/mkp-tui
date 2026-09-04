@@ -38,7 +38,37 @@ submodule.
 └─────────────────────────┘                    └─────────────────────────┘
 ```
 
-## Build and run
+## Install
+
+The client is `mkp`. It needs a Make Play server running on a Mac on the
+same network — it discovers one over mDNS and pairs with it.
+
+**Homebrew** (macOS):
+
+```bash
+brew tap algesten/make-play
+brew install --cask make-play   # the server app, with mkp bundled
+brew install mkp                # just the terminal client
+```
+
+**Nix**:
+
+```bash
+nix run github:algesten/mkp-tui#mkp
+```
+
+**From source**, any platform with a Rust toolchain:
+
+```bash
+cargo install --locked --git https://github.com/algesten/mkp-tui
+```
+
+**Prebuilt Linux binaries** — statically linked x86_64 and aarch64 builds
+are attached to every [release](https://github.com/algesten/mkp-tui/releases/latest).
+They carry no runtime dependencies, so they run on any distribution
+regardless of its glibc version.
+
+## Build from a checkout
 
 ```bash
 cargo build --release -p mkpclient-tui   # produces target/release/mkp
@@ -46,6 +76,9 @@ cargo run -p mkpclient-tui               # discovers a server via mDNS
 ```
 
 Builds on macOS and Linux. Rust via [rustup](https://rustup.rs/).
+
+`mkp --version` reports the release version when one was supplied at build
+time, and `<tag>-<n>-g<sha>` for a build off an untagged commit.
 
 ## Layout
 
