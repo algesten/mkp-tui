@@ -1,0 +1,131 @@
+name: Release
+
+# Fires on a release tag propagated here from the private mkp repo by
+# its scripts/propagate-tag.sh. Builds the static Linux binaries and
+# opens a DRAFT release holding them.
+#
+# The draft is deliberate. The macOS DMG is built, signed and
+# notarized on a Mac and uploaded afterwards by `make publish`, which
+# then publishes the release. Until that happens the release stays a
+# draft, so GitHub's /releases/latest — which the marketing site reads
+# — never advertises a version whose DMG is not there yet.
+#
+# workflow_dispatch builds the same artifacts without a tag and skips
+# the release entirely, for testing the build itself.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string to build with (no release is created)'
+        required: true
+        default: '0.0.0-test'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: echo "version=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      # musl-tools supplies musl-gcc. rustc bundles a self-contained
+      # musl for pure-Rust builds, but aws-lc-rs (via rustls) compiles
+      # C, so it needs a real musl-targeting C compiler and cmake.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools cmake
+          rustup target add ${{ matrix.target }}
+
+      - name: Build
+        env:
+          MKP_VERSION: ${{ steps.version.outputs.version }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }} -p mkpclient-tui
+
+      # Both matrix entries build natively for their runner's arch,
+      # so the binary always runs here — no emulation guard needed.
+      - name: Verify the binary is static and self-reporting
+        env:
+          EXPECTED: ${{ steps.version.outputs.version }}
+        run: |
+          BIN=target/${{ matrix.target }}/release/mkp
+          file "$BIN"
+          # A dynamically linked binary would defeat the point of musl:
+          # it would stop working on older or different distros. Rust
+          # musl builds land as either "statically linked" or
+          # "static-pie linked" depending on the target.
+          if ! file "$BIN" | grep -qE 'statically linked|static-pie linked'; then
+            echo "::error::$BIN is not statically linked"
+            exit 1
+          fi
+          ACTUAL="$("$BIN" --version | awk '{print $2}')"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::mkp --version reported '$ACTUAL', expected '$EXPECTED'"
+            exit 1
+          fi
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          NAME="mkp-$VERSION-${{ matrix.target }}.tar.gz"
+          tar -czf "$NAME" -C "target/${{ matrix.target }}/release" mkp
+          sha256sum "$NAME" | tee "$NAME.sha256"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.name }}
+            ${{ steps.package.outputs.name }}.sha256
+          if-no-files-found: error
+
+  draft-release:
+    name: Open draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      # --draft, not a published release: `make publish` on the Mac
+      # adds the notarized DMG and publishes. See the header comment.
+      - name: Create draft release with the Linux artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "$VERSION" \
+            --notes "Linux builds attached. The macOS DMG is added when the release is published." \
+            dist/*
