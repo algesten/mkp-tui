@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-ui-filter"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: live filter strings per pane (left
+# playlists, middle pane, queue). Dispatch updates these as the
+# user types into the filter modal; memos read them through narrow
+# `drv::Input`s.
+
+[dependencies]
+serde = { workspace = true }

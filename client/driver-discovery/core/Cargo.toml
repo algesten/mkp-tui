@@ -1,0 +1,15 @@
+[package]
+name = "mkpclient-driver-discovery-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Sync core of the mDNS discovery driver.
+#
+# Owns the `ServerAd` ABI type (the thing the worker discovers on the
+# wire) plus the `DiscoveryEvent` variants the native worker posts
+# back. No platform deps: a worker implementation is provided by a
+# sibling `native-*` crate.
+
+[dependencies]

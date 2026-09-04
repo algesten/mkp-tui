@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-request-queue"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: outbound `Request`s queued for the link
+# driver to ship. Dispatch pushes; the runtime's `send_action`
+# drains in order when the link is connected.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

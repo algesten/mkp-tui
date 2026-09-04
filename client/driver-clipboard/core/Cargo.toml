@@ -1,0 +1,15 @@
+[package]
+name = "mkpclient-driver-clipboard-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Sync core of the clipboard driver. Platform-neutral: owns the
+# `ClipboardState` source, the `ClipboardCmd`/`ClipboardEvent` ABI,
+# the sync `ClipboardDriver` handle (execute/process), and the
+# `Trace` trait. A sibling `native-*` crate runs the actual OS
+# clipboard write off-thread.
+
+[dependencies]
+log = { workspace = true }

@@ -1,0 +1,21 @@
+[package]
+name = "mkpclient-driver-ui-bridge-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Sync core of the per-view UI bridge driver.
+#
+# Implements the "pure output driver" pattern from EXAMPLE-ARCH.md
+# §"Pure output drivers": the runtime computes view-model payloads
+# each tick, the driver dedups against an in-flight source and ships
+# pushes to the platform asynchronously. Same execute pattern,
+# trace adapter, and mockable mpsc boundary as every other driver.
+#
+# Platform-neutral: a `*-native-<platform>` crate (currently only
+# `native-ios`) consumes `BridgeCmd::Push` and ships the bytes.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "mkpclient-state-playlists"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: server's playlist list, reconstructed from
+# broadcast `ServerMsg::Playlists` + `PlaylistMutated` / `PlaylistCreated`.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

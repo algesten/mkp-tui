@@ -1,0 +1,20 @@
+[package]
+name = "mkpclient-state-ui-screen"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: which screen / modal is active.
+#
+# A `Screen` value is the "what is the user looking at right now?"
+# answer. Modals own their own ephemeral input state (filter text,
+# search query, action-menu cursor, etc.) on the same enum so the
+# decision and its inputs can't get out of sync.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }
+mkpclient-state-ui-filter = { workspace = true }
+mkpclient-state-ui-selection = { workspace = true }
+mkpclient-state-ui-keybindings = { workspace = true }

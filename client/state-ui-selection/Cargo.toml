@@ -1,0 +1,13 @@
+[package]
+name = "mkpclient-state-ui-selection"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: multi-select state. While `context` is
+# `Some(...)`, selection mode is active and the per-row "marked"
+# decoration appears.
+
+[dependencies]
+imbl = { workspace = true }

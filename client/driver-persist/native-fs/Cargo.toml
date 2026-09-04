@@ -1,0 +1,20 @@
+[package]
+name = "mkpclient-driver-persist-native-fs"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Filesystem-backed persist native. Stores per-backend UI state under
+# `~/.config/mkp/{backend}/...` mirroring the legacy mkp layout so
+# existing on-disk state survives the cutover.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-driver-persist-core = { workspace = true }
+mkpclient-state-ui-keybindings = { workspace = true }
+log = { workspace = true }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

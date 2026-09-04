@@ -1,0 +1,11 @@
+[package]
+name = "mkpclient-state-ui-toast"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: the transient yellow message that overlays
+# the now-playing bar's bottom-left line. Mutated by the TUI / iOS
+# dispatch layer; cleared by the runtime's per-tick ingest sweep
+# once `expires_at` has passed.

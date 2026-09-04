@@ -1,0 +1,19 @@
+[package]
+name = "mkpclient-driver-persist-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Sync core of the persist driver. No platform deps; storage is
+# provided by a sibling `native-*` crate (fs today; iCloud / NSFile
+# tomorrow). Owns the Cmd/Event ABI, the in-flight `Persist` source,
+# and the Trace trait, plus the on-the-wire `SavedView` and
+# `SearchHistory` value types every persist consumer reads.
+
+[dependencies]
+imbl = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+log = { workspace = true }
+drv = { workspace = true }
+mkpclient-state-ui-keybindings = { workspace = true }

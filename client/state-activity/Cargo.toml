@@ -1,0 +1,15 @@
+[package]
+name = "mkpclient-state-activity"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: in-flight peer task activity. Folded from
+# `ServerMsg::TaskStarted/Completed/Failed` broadcasts so the
+# Now Playing bar can render "user@host: Searching 'love'…" and
+# clear the line when the server says the task is done.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

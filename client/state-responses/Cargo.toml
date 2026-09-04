@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-responses"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: request/response correlation map.
+# Seq > 0 responses land here; broadcasts (seq = 0) go to the
+# state sources that track live server state.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

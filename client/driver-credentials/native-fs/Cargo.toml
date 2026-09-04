@@ -1,0 +1,17 @@
+[package]
+name = "mkpclient-driver-credentials-native-fs"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Filesystem-backed credentials native. Stores each entry under
+# `~/.config/mkp/pairing/{fingerprint}/` as four files, mirroring
+# the format the legacy mkpclient used so existing paired servers
+# stay paired across the rewrite.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-state-credentials = { workspace = true }
+mkpclient-driver-credentials-core = { workspace = true }
+log = { workspace = true }

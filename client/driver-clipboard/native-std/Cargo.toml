@@ -1,0 +1,16 @@
+[package]
+name = "mkpclient-driver-clipboard-native-std"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# std-thread + arboard backed clipboard native. Used on desktop
+# targets (macOS / Linux / Windows). iOS uses a different native or
+# a noop driver — `arboard` doesn't compile on iOS.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-driver-clipboard-core = { workspace = true }
+arboard = { version = "3", default-features = false }
+log = { workspace = true }

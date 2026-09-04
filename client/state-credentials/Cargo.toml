@@ -1,0 +1,12 @@
+[package]
+name = "mkpclient-state-credentials"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source (persisted): per-server pairing credentials.
+# Keyed by SHA-256 fingerprint of the server cert.
+
+[dependencies]
+imbl = { workspace = true }

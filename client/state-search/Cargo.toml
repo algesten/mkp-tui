@@ -1,0 +1,15 @@
+[package]
+name = "mkpclient-state-search"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: streaming search results keyed by task_id.
+# The first page arrives as a non-zero-seq `Search` reply; further
+# pages arrive as seq = 0 `SearchMore` broadcasts that carry the
+# same `task_id`. Both are folded into a single growing list here.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

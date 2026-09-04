@@ -1,0 +1,11 @@
+[package]
+name = "mkpclient-state-ui-keybindings"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = "0.8"
+

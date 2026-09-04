@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-playlist-tracks"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: streamed tracks of the playlist the user is
+# currently viewing. Populated from broadcast `ListBegin` /
+# `ListChunk` frames targeting a playlist id.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

@@ -1,0 +1,61 @@
+[package]
+name = "mkpclient-runtime"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Cross-source composition + main loop for the drv-based client.
+# Bundles every source into `Sources`, every sync driver handle + its
+# native marker into `Drivers`, and drives the ingest → query →
+# execute cycle on wake.
+#
+# Platform-neutral: depends only on the `*-core` driver crates plus
+# state crates. A per-platform `runtime-*` crate (runtime-desktop,
+# runtime-ios) wires the right native workers and assembles the
+# bundle via `Drivers::from_handles` / `Runtime::from_parts`.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-state-discovery = { workspace = true }
+mkpclient-state-credentials = { workspace = true }
+mkpclient-state-intent = { workspace = true }
+mkpclient-state-request-queue = { workspace = true }
+mkpclient-state-responses = { workspace = true }
+mkpclient-state-link = { workspace = true }
+mkpclient-state-pairing = { workspace = true }
+mkpclient-state-probes = { workspace = true }
+mkpclient-state-server-state = { workspace = true }
+mkpclient-state-queue = { workspace = true }
+mkpclient-state-playlists = { workspace = true }
+mkpclient-state-playlist-tracks = { workspace = true }
+mkpclient-state-search = { workspace = true }
+mkpclient-state-artist-detail = { workspace = true }
+mkpclient-state-activity = { workspace = true }
+mkpclient-state-clock = { workspace = true }
+mkpclient-state-ui-preview = { workspace = true }
+mkpclient-state-ui-toast = { workspace = true }
+mkpclient-state-ui-cursor = { workspace = true }
+mkpclient-state-ui-filter = { workspace = true }
+mkpclient-state-ui-selection = { workspace = true }
+mkpclient-state-ui-history = { workspace = true }
+mkpclient-state-ui-screen = { workspace = true }
+mkpclient-state-ui-picker = { workspace = true }
+mkpclient-state-ui-playlists-pending = { workspace = true }
+mkpclient-state-ui-session = { workspace = true }
+mkpclient-state-ui-keybindings = { workspace = true }
+mkpclient-driver-discovery-core = { workspace = true }
+mkpclient-driver-credentials-core = { workspace = true }
+mkpclient-driver-link-core = { workspace = true }
+mkpclient-driver-persist-core = { workspace = true }
+mkpclient-driver-clipboard-core = { workspace = true }
+mkpclient-driver-ui-bridge-core = { workspace = true }
+
+mkproto = { workspace = true }
+
+log = { workspace = true }
+drv = { workspace = true }
+imbl = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+unicode-normalization = "0.1"

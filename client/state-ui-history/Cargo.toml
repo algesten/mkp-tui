@@ -1,0 +1,13 @@
+[package]
+name = "mkpclient-state-ui-history"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: middle-pane navigation history (back /
+# forward stacks plus the active mode). Browser-shaped — a fresh
+# drill-in clears the forward stack.
+
+[dependencies]
+mkproto = { workspace = true }

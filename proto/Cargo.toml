@@ -1,0 +1,27 @@
+[package]
+name = "mkproto"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["mdns"]
+# mDNS service discovery + advertising. Pulls in tokio + socket2 +
+# sysinfo + opslag. Consumers on the drv-based sync client path
+# turn this off and use `mkpclient-driver-discovery-*` for a
+# tokio-free browser.
+mdns = ["dep:tokio", "dep:socket2", "dep:sysinfo", "dep:opslag"]
+
+[dependencies]
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+hmac = "0.12"
+sha2 = "0.10"
+
+# mdns-only deps, gated by the feature.
+opslag = { version = "0.2.3", optional = true }
+socket2 = { version = "0.6", features = ["all"], optional = true }
+sysinfo = { version = "0.38", default-features = false, features = ["network", "system"], optional = true }
+tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros"], optional = true }

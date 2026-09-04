@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-pairing"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: in-progress pairing session (if any).
+# When the link driver is in `Kind::Pairing` and receives a
+# `PairResponse`, it derives the six-digit verification code and
+# posts it here via an ingest fold. The UI reads `code` to display;
+# a user dispatch event then pushes `ConfirmPair` or `RejectPair`.
+
+[dependencies]

@@ -1,0 +1,15 @@
+[package]
+name = "mkpclient-state-ui-session"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: per-session breadcrumbs that sit between
+# connect attempts and the persist layer. Owns the auto-connect
+# guards (preferred_server / auto_connect / started_at), the
+# disconnect breadcrumb (lost_server), the saved-view restore guard
+# (auto_restored_view) and target (pending_cursor_song_id), the
+# active backend name (drives per-backend persist scope).
+
+[dependencies]

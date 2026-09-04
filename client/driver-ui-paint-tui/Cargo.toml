@@ -1,0 +1,20 @@
+[package]
+name = "mkpclient-driver-ui-paint-tui"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# TUI paint driver. Wraps the binary's `terminal.draw(...)` call in
+# the spec-canonical execute-pattern boundary from EXAMPLE-ARCH.md
+# §"Pure output drivers": frame-id source, Trace hook, mockable
+# seam.
+#
+# Single crate (no core/native split) because ratatui paint is
+# fully synchronous — there is no platform-specific async worker to
+# swap out. The paint closure is supplied by the binary so the
+# painter helpers (the existing `tui::render::*`) stay where they
+# are; this crate only adds the driver boundary around them.
+
+[dependencies]
+log = { workspace = true }

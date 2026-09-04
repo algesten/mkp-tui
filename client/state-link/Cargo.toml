@@ -1,0 +1,12 @@
+[package]
+name = "mkpclient-state-link"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: TLS-link lifecycle to the active server.
+# Mutated by the runtime's ingest phase as it folds `LinkEvent`s
+# from the link driver.
+
+[dependencies]

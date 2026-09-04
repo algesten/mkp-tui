@@ -1,0 +1,113 @@
+[workspace]
+members = [
+    "proto",
+    "client/core",
+    "client/driver-clipboard/core",
+    "client/driver-clipboard/native-std",
+    "client/driver-credentials/core",
+    "client/driver-credentials/native-fs",
+    "client/driver-discovery/core",
+    "client/driver-discovery/native-std",
+    "client/driver-link/core",
+    "client/driver-link/native-std",
+    "client/driver-persist/core",
+    "client/driver-persist/native-fs",
+    "client/driver-ui-bridge/core",
+    "client/driver-ui-paint-tui",
+    "client/runtime",
+    "client/runtime-desktop",
+    "client/tui",
+    "client/state-activity",
+    "client/state-artist-detail",
+    "client/state-clock",
+    "client/state-credentials",
+    "client/state-discovery",
+    "client/state-intent",
+    "client/state-link",
+    "client/state-pairing",
+    "client/state-playlist-tracks",
+    "client/state-playlists",
+    "client/state-probes",
+    "client/state-queue",
+    "client/state-request-queue",
+    "client/state-responses",
+    "client/state-search",
+    "client/state-server-state",
+    "client/state-ui-cursor",
+    "client/state-ui-filter",
+    "client/state-ui-history",
+    "client/state-ui-keybindings",
+    "client/state-ui-picker",
+    "client/state-ui-playlists-pending",
+    "client/state-ui-preview",
+    "client/state-ui-screen",
+    "client/state-ui-selection",
+    "client/state-ui-session",
+    "client/state-ui-toast",
+]
+resolver = "2"
+
+[workspace.package]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/algesten/mkp-tui"
+
+[workspace.dependencies]
+# Internal crates for the drv-based client.
+mkpclient-core = { path = "client/core" }
+mkpclient-state-discovery = { path = "client/state-discovery" }
+mkpclient-state-credentials = { path = "client/state-credentials" }
+mkpclient-state-intent = { path = "client/state-intent" }
+mkpclient-state-request-queue = { path = "client/state-request-queue" }
+mkpclient-state-responses = { path = "client/state-responses" }
+mkpclient-state-link = { path = "client/state-link" }
+mkpclient-state-pairing = { path = "client/state-pairing" }
+mkpclient-state-probes = { path = "client/state-probes" }
+mkpclient-state-server-state = { path = "client/state-server-state" }
+mkpclient-state-queue = { path = "client/state-queue" }
+mkpclient-state-playlists = { path = "client/state-playlists" }
+mkpclient-state-playlist-tracks = { path = "client/state-playlist-tracks" }
+mkpclient-state-search = { path = "client/state-search" }
+mkpclient-state-artist-detail = { path = "client/state-artist-detail" }
+mkpclient-state-activity = { path = "client/state-activity" }
+mkpclient-state-clock = { path = "client/state-clock" }
+mkpclient-state-ui-preview = { path = "client/state-ui-preview" }
+mkpclient-state-ui-toast = { path = "client/state-ui-toast" }
+mkpclient-state-ui-cursor = { path = "client/state-ui-cursor" }
+mkpclient-state-ui-filter = { path = "client/state-ui-filter" }
+mkpclient-state-ui-selection = { path = "client/state-ui-selection" }
+mkpclient-state-ui-history = { path = "client/state-ui-history" }
+mkpclient-state-ui-screen = { path = "client/state-ui-screen" }
+mkpclient-state-ui-picker = { path = "client/state-ui-picker" }
+mkpclient-state-ui-playlists-pending = { path = "client/state-ui-playlists-pending" }
+mkpclient-state-ui-session = { path = "client/state-ui-session" }
+mkpclient-state-ui-keybindings = { path = "client/state-ui-keybindings" }
+mkpclient-driver-discovery-core = { path = "client/driver-discovery/core" }
+mkpclient-driver-discovery-native-std = { path = "client/driver-discovery/native-std" }
+mkpclient-driver-credentials-core = { path = "client/driver-credentials/core" }
+mkpclient-driver-credentials-native-fs = { path = "client/driver-credentials/native-fs" }
+mkpclient-driver-link-core = { path = "client/driver-link/core" }
+mkpclient-driver-link-native-std = { path = "client/driver-link/native-std" }
+mkpclient-driver-persist-core = { path = "client/driver-persist/core" }
+mkpclient-driver-persist-native-fs = { path = "client/driver-persist/native-fs" }
+mkpclient-driver-clipboard-core = { path = "client/driver-clipboard/core" }
+mkpclient-driver-clipboard-native-std = { path = "client/driver-clipboard/native-std" }
+mkpclient-driver-ui-bridge-core = { path = "client/driver-ui-bridge/core" }
+mkpclient-driver-ui-paint-tui = { path = "client/driver-ui-paint-tui" }
+mkpclient-runtime = { path = "client/runtime" }
+mkpclient-runtime-desktop = { path = "client/runtime-desktop" }
+mkpclient-tui = { path = "client/tui" }
+
+# Proto without the mdns feature — keeps tokio out of the client's dep tree.
+mkproto = { path = "proto", default-features = false }
+
+# drv = the memoization / query primitive.
+drv = { version = "0.4", features = ["imbl"] }
+imbl = { version = "7", features = ["serde"] }
+serde = { version = "1", features = ["derive", "rc"] }
+rmp-serde = "1"
+
+# Shared external deps used across the client crates.
+log = "0.4"
+opslag = "0.2.3"
+socket2 = { version = "0.6", features = ["all"] }
+sysinfo = { version = "0.38", default-features = false, features = ["network", "system"] }

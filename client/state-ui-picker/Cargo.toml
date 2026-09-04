@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-ui-picker"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: the playlist-picker overlay's state and the
+# "create + add" deferred-action breadcrumb. Active during the
+# `Screen::PlaylistPicker` flow and the follow-up
+# `Screen::CreatePlaylist` (when reached via "+ New…").
+
+[dependencies]
+mkpclient-state-ui-screen = { workspace = true }

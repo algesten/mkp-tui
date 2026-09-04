@@ -1,0 +1,33 @@
+[package]
+name = "mkpclient-runtime-desktop"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Desktop wiring of the drv-based client runtime.
+#
+# Spawns the std-thread-based native workers (mDNS via opslag,
+# rustls TLS, filesystem credentials/persist) and assembles them
+# into a `Runtime` via `Drivers::from_handles` / `Runtime::from_parts`.
+# Used by the TUI binary and by examples.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-runtime = { workspace = true }
+mkpclient-state-link = { workspace = true }
+mkpclient-driver-discovery-core = { workspace = true }
+mkpclient-driver-discovery-native-std = { workspace = true }
+mkpclient-driver-credentials-core = { workspace = true }
+mkpclient-driver-credentials-native-fs = { workspace = true }
+mkpclient-driver-link-native-std = { workspace = true }
+mkpclient-driver-persist-native-fs = { workspace = true }
+mkpclient-driver-persist-core = { workspace = true }
+mkpclient-driver-clipboard-core = { workspace = true }
+mkpclient-driver-clipboard-native-std = { workspace = true }
+
+mkproto = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+env_logger = "0.11"

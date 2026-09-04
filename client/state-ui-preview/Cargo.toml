@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-ui-preview"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: the song the user is hovering over.
+# Mutated by the TUI/iOS dispatch layer; the now-playing bar memo
+# reads it to render a dim "preview" line that overrides current
+# playback for `ttl` seconds.
+
+[dependencies]
+mkproto = { workspace = true }

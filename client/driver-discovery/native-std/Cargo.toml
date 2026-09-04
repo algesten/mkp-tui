@@ -1,0 +1,19 @@
+[package]
+name = "mkpclient-driver-discovery-native-std"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Portable std-threads-and-blocking-sockets native for the discovery
+# driver. Runs on any target where `std::net::UdpSocket` and raw
+# multicast membership work (macOS, Linux). An iOS-flavoured native
+# will sit beside this one and use DNSServiceRef via FFI.
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-driver-discovery-core = { workspace = true }
+opslag = { workspace = true }
+socket2 = { workspace = true }
+sysinfo = { workspace = true }
+log = { workspace = true }

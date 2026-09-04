@@ -1,0 +1,18 @@
+[package]
+name = "mkpclient-driver-link-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Sync core of the link driver.
+#
+# Owns the `LinkCmd` / `LinkEvent` ABI between runtime and native
+# worker. Pairing is folded in: one link at a time, its `LinkKind`
+# decides which command variants are valid and which event types
+# can appear. No crypto, no sockets, no platform deps — those live
+# in the `native-*` sibling.
+
+[dependencies]
+mkpclient-state-link = { workspace = true }
+mkproto = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-artist-detail"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: streamed artist-detail extras —
+# similar_artists keyed by artist_id, plus a placeholder for
+# ArtistAlbumsChunk paging if/when needed.
+
+[dependencies]
+imbl = { workspace = true }
+mkproto = { workspace = true }

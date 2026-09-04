@@ -1,0 +1,13 @@
+[package]
+name = "mkpclient-state-server-state"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: mirrored server-side `PlayState`.
+# Updated by the runtime's ingest phase as it folds
+# `ServerMsg::StateUpdate` broadcasts.
+
+[dependencies]
+mkproto = { workspace = true }

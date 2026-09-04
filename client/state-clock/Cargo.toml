@@ -1,0 +1,15 @@
+[package]
+name = "mkpclient-state-clock"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Wall-clock source per `EXAMPLE-ARCH.md` § "Time is a source field":
+# the runtime writes `clock.now = Instant::now()` once per tick;
+# every dispatch handler / ingest helper / memo that needs a "now"
+# reads from this source instead of calling `Instant::now()`
+# directly. Tests can then drive simulated time by writing into the
+# field — no real-clock waits, no flakes.
+
+[dependencies]

@@ -1,0 +1,11 @@
+[package]
+name = "mkpclient-state-intent"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: what the user wants to connect to / pair with.
+# Dispatch mutates this directly; no driver.
+
+[dependencies]

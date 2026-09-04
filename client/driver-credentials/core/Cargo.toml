@@ -1,0 +1,12 @@
+[package]
+name = "mkpclient-driver-credentials-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Sync core of the credentials driver. No platform deps; storage is
+# provided by a sibling `native-*` crate (fs or Keychain).
+
+[dependencies]
+mkpclient-state-credentials = { workspace = true }

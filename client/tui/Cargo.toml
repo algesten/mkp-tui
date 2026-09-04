@@ -1,0 +1,62 @@
+[package]
+name = "mkpclient-tui"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# Ratatui-based TUI on the drv-based client runtime. Stands up alongside
+# the legacy `mkp` binary; at cutover time this crate replaces it.
+
+[[bin]]
+name = "mkp"
+path = "src/main.rs"
+
+[dependencies]
+mkpclient-core = { workspace = true }
+mkpclient-driver-discovery-core = { workspace = true }
+mkpclient-driver-discovery-native-std = { workspace = true }
+mkpclient-driver-link-core = { workspace = true }
+mkpclient-driver-link-native-std = { workspace = true }
+mkpclient-state-discovery = { workspace = true }
+mkpclient-state-link = { workspace = true }
+mkpclient-state-pairing = { workspace = true }
+mkpclient-state-probes = { workspace = true }
+mkpclient-state-credentials = { workspace = true }
+mkpclient-state-queue = { workspace = true }
+mkpclient-state-playlist-tracks = { workspace = true }
+mkpclient-state-playlists = { workspace = true }
+mkpclient-state-ui-cursor = { workspace = true }
+mkpclient-state-ui-filter = { workspace = true }
+mkpclient-state-ui-selection = { workspace = true }
+mkpclient-state-ui-history = { workspace = true }
+mkpclient-state-ui-screen = { workspace = true }
+mkpclient-state-ui-keybindings = { workspace = true }
+mkpclient-state-ui-picker = { workspace = true }
+mkpclient-driver-ui-paint-tui = { workspace = true }
+mkpclient-runtime = { workspace = true }
+mkpclient-runtime-desktop = { workspace = true }
+mkproto = { workspace = true }
+
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+ratatui = "0.30"
+log = { workspace = true }
+libc = "0.2"
+env_logger = "0.11"
+sysinfo = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+arboard = { version = "3", default-features = false }
+unicode-width = "0.2"
+
+[dev-dependencies]
+mkpclient-driver-discovery-core = { workspace = true }
+mkpclient-state-credentials = { workspace = true }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "tls12"] }
+rustls-pemfile = "2"
+rmp-serde = "1"
+sha2 = "0.10"
+tempfile = "3"

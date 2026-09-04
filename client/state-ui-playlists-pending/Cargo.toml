@@ -1,0 +1,17 @@
+[package]
+name = "mkpclient-state-ui-playlists-pending"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: optimistic create / delete entries shadowing
+# the server-mirror in `state-playlists`. Each entry carries the
+# request seq it was issued under, so reconciliation against the
+# `PlaylistCreated` response or the `Deleted` broadcast / `Error`
+# reply is unambiguous (per EXAMPLE-ARCH §3 "user-decision sources
+# keyed by external facts" — keep the user decision and the server
+# fact in separate sources, joined by a memo).
+
+[dependencies]
+imbl = { workspace = true }

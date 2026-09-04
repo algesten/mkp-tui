@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-discovery"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: the live list of mDNS-discovered servers.
+# Owned by the runtime, written by the runtime's ingest phase as it
+# folds `DiscoveryEvent`s from `mkpclient-driver-discovery-core`.
+
+[dependencies]
+mkpclient-driver-discovery-core = { workspace = true }
+imbl = { workspace = true }

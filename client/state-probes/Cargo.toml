@@ -1,0 +1,14 @@
+[package]
+name = "mkpclient-state-probes"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# External-fact source: cached TOFU probe results, keyed by address.
+# Populated by the link driver's `ProbeFingerprint` cmd and consumed
+# by the runtime's link-action logic to pick the right credential
+# among several that share a hostname.
+
+[dependencies]
+imbl = { workspace = true }

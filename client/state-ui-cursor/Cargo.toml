@@ -1,0 +1,13 @@
+[package]
+name = "mkpclient-state-ui-cursor"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+
+# User-decision source: cursor positions for the four cursor-bearing
+# regions (left playlists column, middle pane, queue column, pre-
+# connect server picker) plus the active column focus. Mutated by
+# the dispatch layer; read by view-model memos and the renderer.
+
+[dependencies]
