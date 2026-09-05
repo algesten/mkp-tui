@@ -11,6 +11,7 @@ use mkproto::{ListTarget, QueueDelta, QueueEntry, ServerMsg, Song};
 
 use common::certs;
 use common::harness::Harness;
+use common::mock_server;
 use common::mock_server::{MockServer, ScriptStep};
 
 fn song(id: &str, title: &str) -> Song {
@@ -52,7 +53,7 @@ fn queue_assembles_from_streamed_chunks() {
     let mock = MockServer::start(
         certs::generate(),
         Box::new(move |msg| match msg {
-            ClientMsg::Hello { .. } => vec![ScriptStep::Reply(ServerMsg::Pong)],
+            ClientMsg::Hello { .. } => mock_server::hello_reply(),
             ClientMsg::GetState => vec![
                 ScriptStep::Reply(ServerMsg::Ok),
                 ScriptStep::Broadcast(ServerMsg::ListBegin {
@@ -140,7 +141,7 @@ fn queue_delta_moves_current_index() {
     let mock = MockServer::start(
         certs::generate(),
         Box::new(move |msg| match msg {
-            ClientMsg::Hello { .. } => vec![ScriptStep::Reply(ServerMsg::Pong)],
+            ClientMsg::Hello { .. } => mock_server::hello_reply(),
             ClientMsg::GetState => vec![
                 ScriptStep::Reply(ServerMsg::Ok),
                 ScriptStep::Broadcast(ServerMsg::ListBegin {

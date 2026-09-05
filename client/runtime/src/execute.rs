@@ -262,6 +262,9 @@ pub fn run(sources: &mut Sources, drivers: &Drivers) {
     // link.phase / link.target post-execute (the link driver writes
     // intent state synchronously inside its trampoline).
     crate::lifecycle::backend::apply_backend(sources, drivers);
+    // Before everything that reads catalogue-derived sources: if the
+    // server is on a backend we haven't built from, they are stale.
+    crate::lifecycle::backend_session::apply_backend_session(sources);
     crate::lifecycle::server_errors::apply_server_errors(sources);
     crate::lifecycle::search_reopen::apply_search_reopen(sources, drivers);
     crate::lifecycle::cursor_snap::apply_cursor_snap(sources);

@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use mkpclient_driver_persist_core::{Persist, PersistCmd, SavedViewKey};
 use mkpclient_state_playlist_tracks::PlaylistTracks;
+use mkpclient_state_server_state::ServerState;
 use mkpclient_state_ui_history::{MiddleMode, UiHistory};
 use mkpclient_state_ui_session::UiSession;
 
@@ -104,6 +105,23 @@ impl<'a> ViewSessionInput<'a> {
     }
 }
 
+/// The other half of the `ViewKey`. The action has to gate on the
+/// same thing the trampoline needs to build one, or it can approve a
+/// save the trampoline then declines — and since a decline writes no
+/// `last_view_saved_key`, the diff would never converge.
+#[derive(drv::Input)]
+pub struct ViewBackendInput<'a> {
+    pub backend: Option<&'a Arc<str>>,
+}
+
+impl<'a> ViewBackendInput<'a> {
+    pub fn new(s: &'a ServerState) -> Self {
+        Self {
+            backend: s.backend.as_ref(),
+        }
+    }
+}
+
 #[derive(drv::Input)]
 pub struct ViewLastSavedInput<'a> {
     pub last: Option<&'a SavedViewKey>,
@@ -143,14 +161,16 @@ pub enum ViewSaveAction {
 }
 
 #[drv::memo(single)]
-pub fn view_save_action<'a, 'b>(
+pub fn view_save_action<'a, 'b, 'c>(
     desired: Option<SavedViewKey>,
     session: ViewSessionInput<'a>,
     last: ViewLastSavedInput<'b>,
+    server: ViewBackendInput<'c>,
 ) -> ViewSaveAction {
-    // Don't save while disconnected (no backend to write under) or
-    // before restore has had a chance to overwrite stale `mode`.
-    if session.backend_name.is_none() || !session.auto_restored_view {
+    // Don't save until both halves of the `ViewKey` are known (no
+    // server or backend to write under) or before restore has had a
+    // chance to overwrite stale `mode`.
+    if session.backend_name.is_none() || server.backend.is_none() || !session.auto_restored_view {
         return ViewSaveAction::Noop;
     }
     let Some(d) = desired else {
@@ -173,6 +193,7 @@ pub fn apply_view_persist(sources: &mut Sources, drivers: &Drivers) {
         ),
         ViewSessionInput::new(&sources.session),
         ViewLastSavedInput::new(&sources.persist),
+        ViewBackendInput::new(&sources.server),
     );
     if !matches!(action, ViewSaveAction::Save) {
         return;
@@ -180,7 +201,7 @@ pub fn apply_view_persist(sources: &mut Sources, drivers: &Drivers) {
     let Some(view) = crate::dispatch::build_saved_view(sources) else {
         return;
     };
-    let Some(backend) = sources.session.backend_name.as_ref().map(|s| s.to_string()) else {
+    let Some(key) = crate::dispatch::current_view_key(sources) else {
         return;
     };
     // Sync intent: write the key before firing so the next tick's
@@ -188,5 +209,5 @@ pub fn apply_view_persist(sources: &mut Sources, drivers: &Drivers) {
     sources.persist.last_view_saved_key = Some(view.key());
     drivers
         .persist
-        .execute([&PersistCmd::SaveView { backend, view }]);
+        .execute([&PersistCmd::SaveView { key, view }]);
 }

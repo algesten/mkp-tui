@@ -208,6 +208,7 @@ mod tests {
                 repeat: Default::default(),
             }),
             backend: None,
+            built_from: None,
         };
         (q, s)
     }

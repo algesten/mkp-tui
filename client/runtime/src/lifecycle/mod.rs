@@ -11,6 +11,7 @@
 //! + trampoline), so adding a flow doesn't churn this file.
 
 pub mod backend;
+pub mod backend_session;
 pub mod clipboard_toast;
 pub mod connect;
 pub mod cursor_clamp;

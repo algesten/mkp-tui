@@ -99,17 +99,22 @@ impl Harness {
             mock,
             fingerprint,
         };
-        // Tick until Connected (or timeout).
+        // Tick until the handshake has completed — not merely until
+        // the socket is up. The server answers `Hello` with
+        // `BackendChanged`, and that reply starts the session:
+        // it resets the sources and issues `GetState` /
+        // `GetPlaylists`. A test that seeds state in between would
+        // have it reset out from under itself.
         h.tick_until(
             |rt| {
                 matches!(
                     rt.sources.link.phase,
                     mkpclient_state_link::LinkPhase::Connected
-                )
+                ) && rt.sources.server.backend.is_some()
             },
             Duration::from_secs(5),
         )
-        .expect("link did not connect within 5s");
+        .expect("link did not connect and hand shake within 5s");
         h
     }
 

@@ -10,6 +10,7 @@ use mkproto::{Playlist, ServerMsg};
 
 use common::certs;
 use common::harness::Harness;
+use common::mock_server;
 use common::mock_server::{MockServer, ScriptStep};
 
 fn playlist(id: &str, count: usize) -> Playlist {
@@ -28,7 +29,7 @@ fn playlist_counts_stream_into_the_initial_list() {
     let mock = MockServer::start(
         certs::generate(),
         Box::new(|msg| match msg {
-            ClientMsg::Hello { .. } => vec![ScriptStep::Reply(ServerMsg::Pong)],
+            ClientMsg::Hello { .. } => mock_server::hello_reply(),
             ClientMsg::GetState => vec![ScriptStep::Reply(ServerMsg::Ok)],
             ClientMsg::GetPlaylists => vec![
                 ScriptStep::Reply(ServerMsg::Playlists {

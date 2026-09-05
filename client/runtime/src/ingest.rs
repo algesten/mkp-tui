@@ -70,10 +70,12 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                         sources.pairing.phase = PairingPhase::AwaitingResponse;
                     }
                     LinkKind::Client => {
-                        // Post-connect handshake: identify + pull
-                        // initial state + playlists. The execute
-                        // phase picks these up next tick and ships
-                        // them.
+                        // Post-connect handshake: identify. The
+                        // server answers `Hello` with
+                        // `BackendChanged`; folding that fact is what
+                        // lets `backend_session` see a backend it
+                        // hasn't built from and start the session.
+                        // The execute phase ships this next tick.
                         sources.requests.push(
                             ClientMsg::Hello {
                                 peer: peer.clone(),
@@ -81,17 +83,6 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                             },
                             None,
                         );
-                        sources.requests.push(ClientMsg::GetState, None);
-                        let task_id = sources.requests.alloc_task_id();
-                        let seq = sources
-                            .requests
-                            .push(ClientMsg::GetPlaylists, Some(task_id));
-                        // Track this seq so an `Error` reply still
-                        // flips `playlists.loaded = true` (with empty
-                        // items) and is consumed before the
-                        // `ErrorModal` lifecycle sees it.
-                        sources.playlists.pending_request = Some(seq);
-                        sources.playlists.pending_task = Some(task_id);
                     }
                 }
             }
@@ -146,20 +137,40 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.link.phase = LinkPhase::Closed;
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
+                reset_server_derived_state(sources);
+                // Nothing can be sent on a dead link, and the
+                // server-reported facts are gone with it.
                 sources.requests.clear();
-                sources.responses.clear();
-                // Server-side-observed state is no longer valid.
                 sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
-                sources.activity.clear();
-                sources.pending_playlists.clear();
             }
         }
     }
+}
+
+/// Drop every source describing the catalogue the server was showing
+/// us.
+///
+/// Shared by the two things that invalidate it wholesale — the link
+/// closing, and `backend_session` restarting on a backend it wasn't
+/// built from — so the two cannot drift apart. Anything added here
+/// must be true of both: catalogue state, meaningless once that
+/// server or its backend is gone.
+///
+/// The `server` source is only partly reset. `play` describes the
+/// outgoing catalogue and goes with it; `backend` is a fact ingest
+/// owns, and a swap must not blank the frame that just announced it.
+/// The close path, where that fact really is gone, clears the source
+/// itself.
+pub(crate) fn reset_server_derived_state(sources: &mut Sources) {
+    sources.server.play = None;
+    sources.responses.clear();
+    sources.queue = Default::default();
+    sources.playlists = Default::default();
+    sources.playlist_tracks.clear();
+    sources.search.clear();
+    sources.artist_extras.clear();
+    sources.activity.clear();
+    sources.pending_playlists.clear();
 }
 
 /// Some response variants carry live state (not just a reply) and
@@ -207,17 +218,10 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
     }
     match &response.msg {
         ServerMsg::BackendChanged { backend } => {
+            // Fold the fact only. `backend_session` diffs it against
+            // `built_from` and restarts the session if they differ.
             sources.server.backend = Some(Arc::from(backend.as_str()));
-            // Backend initialization / swap invalidates all state
-            // derived from the prior backend.
-            sources.queue = Default::default();
-            sources.playlists = Default::default();
-            sources.playlist_tracks.clear();
-            sources.search.clear();
             return true;
-        }
-        ServerMsg::Playlists { playlists } => {
-            sources.playlists.set_all(playlists.clone());
         }
         ServerMsg::PlaylistCreated { playlist } => {
             sources.playlists.upsert(playlist.clone());
@@ -298,11 +302,6 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
         }
         ServerMsg::BackendChanged { backend } => {
             sources.server.backend = Some(Arc::from(backend));
-            // Backend swap invalidates queue + playlists + tracks.
-            sources.queue = Default::default();
-            sources.playlists = Default::default();
-            sources.playlist_tracks.clear();
-            sources.search.clear();
         }
         ServerMsg::Playlists { playlists } => {
             sources.playlists.set_all(playlists);
@@ -556,14 +555,14 @@ fn ingest_persist(sources: &mut Sources, drivers: &Drivers) {
                     sources.session.preferred_server = name.map(Arc::from);
                 }
             }
-            PersistEvent::ViewLoaded { backend, view } => {
+            PersistEvent::ViewLoaded { key, view } => {
                 sources
                     .persist
                     .loads_in_flight
-                    .remove(&LoadKey::View(backend.clone()));
+                    .remove(&LoadKey::View(key.clone()));
                 // Stash for `lifecycle::restore`'s memo pair. The
                 // trampoline reads, applies, and clears in one shot.
-                sources.persist.last_view_load = Some(ViewLoadResult { backend, view });
+                sources.persist.last_view_load = Some(ViewLoadResult { key, view });
             }
             PersistEvent::SearchHistoryLoaded { backend, history } => {
                 sources

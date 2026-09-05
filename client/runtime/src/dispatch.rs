@@ -14,7 +14,7 @@ use log::debug;
 
 use mkpclient_driver_credentials_core::CredCmd;
 use mkpclient_driver_link_core::LinkCmd;
-use mkpclient_driver_persist_core::{LoadKey, PersistCmd, SavedView};
+use mkpclient_driver_persist_core::{LoadKey, PersistCmd, SavedView, ViewKey};
 use mkpclient_state_link::{Link, LinkPhase};
 use mkpclient_state_pairing::PairingPhase;
 use mkpclient_state_ui_cursor::ColumnFocus;
@@ -305,11 +305,11 @@ pub enum SemanticEvent {
     /// `last_view` file. Reads sources.history + cursor + the matching
     /// detail source to build the `SavedView`.
     PersistSaveCurrentView {
-        backend: String,
+        key: ViewKey,
     },
-    /// Erase the per-backend `last_view` file.
+    /// Erase the per-server-and-backend `last_view` file.
     PersistClearView {
-        backend: String,
+        key: ViewKey,
     },
     /// Issue a `LoadView` for the connected backend if one isn't
     /// already in flight. Result lands via `ingest::ingest_persist`.
@@ -673,15 +673,13 @@ fn dispatch_semantic(ev: SemanticEvent, sources: &mut Sources, drivers: &Drivers
                 search_type,
             }]);
         }
-        PersistSaveCurrentView { backend } => save_current_view(sources, drivers, backend),
-        PersistClearView { backend } => {
-            drivers
-                .persist
-                .execute([&PersistCmd::ClearView { backend }]);
+        PersistSaveCurrentView { key } => save_current_view(sources, drivers, key),
+        PersistClearView { key } => {
+            drivers.persist.execute([&PersistCmd::ClearView { key }]);
         }
         PersistRequestLoadView => {
-            if let Some(backend) = sources.session.backend_name.clone() {
-                request_load_view(sources, drivers, backend.to_string());
+            if let Some(key) = current_view_key(sources) {
+                request_load_view(sources, drivers, key);
             }
         }
         PersistRequestLoadLastAddPlaylist { backend } => {
@@ -2856,13 +2854,23 @@ fn snap_middle_cursor_to_song_id(sources: &mut Sources, target: String) {
 /// it to the persist driver. No-op if the current mode doesn't have
 /// enough state to round-trip (e.g. PlaylistSongs without a loaded
 /// playlist id).
-pub fn save_current_view(sources: &Sources, drivers: &Drivers, backend: String) {
+pub fn save_current_view(sources: &Sources, drivers: &Drivers, key: ViewKey) {
     let Some(view) = build_saved_view(sources) else {
         return;
     };
     drivers
         .persist
-        .execute([&PersistCmd::SaveView { backend, view }]);
+        .execute([&PersistCmd::SaveView { key, view }]);
+}
+
+/// The `ViewKey` for the current session — which server, and which
+/// music backend it reported. `None` until both halves are known,
+/// which for the backend means the handshake has landed.
+pub(crate) fn current_view_key(sources: &Sources) -> Option<ViewKey> {
+    Some(ViewKey::new(
+        sources.session.backend_name.as_deref()?,
+        sources.server.backend.as_deref()?,
+    ))
 }
 
 pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
@@ -3006,13 +3014,13 @@ fn nonempty(s: String) -> Option<String> {
     }
 }
 
-fn request_load_view(sources: &mut Sources, drivers: &Drivers, backend: String) {
-    let key = LoadKey::View(backend.clone());
-    if sources.persist.is_loading(&key) {
+fn request_load_view(sources: &mut Sources, drivers: &Drivers, key: ViewKey) {
+    let load_key = LoadKey::View(key.clone());
+    if sources.persist.is_loading(&load_key) {
         return;
     }
-    sources.persist.loads_in_flight.insert(key);
-    drivers.persist.execute([&PersistCmd::LoadView { backend }]);
+    sources.persist.loads_in_flight.insert(load_key);
+    drivers.persist.execute([&PersistCmd::LoadView { key }]);
 }
 
 fn request_load_last_add_playlist(sources: &mut Sources, drivers: &Drivers, backend: String) {

@@ -11,6 +11,7 @@ use mkproto::{Album, SearchResults, SearchType, ServerMsg, Song};
 
 use common::certs;
 use common::harness::Harness;
+use common::mock_server;
 use common::mock_server::{MockServer, ScriptStep};
 
 fn song(id: &str, title: &str) -> Song {
@@ -35,7 +36,7 @@ fn search_streams_first_page_then_appends_more() {
     let mock = MockServer::start(
         certs,
         Box::new(|msg| match msg {
-            ClientMsg::Hello { .. } => vec![ScriptStep::Reply(ServerMsg::Pong)],
+            ClientMsg::Hello { .. } => mock_server::hello_reply(),
             ClientMsg::GetState => vec![ScriptStep::Reply(ServerMsg::Ok)],
             ClientMsg::GetPlaylists => {
                 vec![ScriptStep::Reply(ServerMsg::Playlists {
@@ -103,7 +104,7 @@ fn search_more_with_wrong_task_id_is_ignored() {
     let mock = MockServer::start(
         certs,
         Box::new(|msg| match msg {
-            ClientMsg::Hello { .. } => vec![ScriptStep::Reply(ServerMsg::Pong)],
+            ClientMsg::Hello { .. } => mock_server::hello_reply(),
             ClientMsg::GetState => vec![ScriptStep::Reply(ServerMsg::Ok)],
             ClientMsg::GetPlaylists => {
                 vec![ScriptStep::Reply(ServerMsg::Playlists {
