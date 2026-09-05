@@ -104,3 +104,65 @@ impl Link {
         self.retry_at.is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn backoff_widens_then_holds_at_the_ceiling() {
+        let t0 = Instant::now();
+        let mut link = Link::default();
+
+        for expected in RETRY_BACKOFF {
+            link.schedule_retry(t0);
+            assert_eq!(link.retry_at, Some(t0 + *expected));
+        }
+        // Past the end of the table the delay stops growing rather
+        // than running away or panicking on the index.
+        let ceiling = *RETRY_BACKOFF.last().unwrap();
+        for _ in 0..5 {
+            link.schedule_retry(t0);
+            assert_eq!(link.retry_at, Some(t0 + ceiling));
+        }
+    }
+
+    #[test]
+    fn a_pending_backoff_is_withheld_until_it_lapses() {
+        let t0 = Instant::now();
+        let mut link = Link::default();
+        assert!(!link.retry_pending(), "no backoff means nothing withheld");
+
+        link.schedule_retry(t0);
+        let wait = RETRY_BACKOFF[0];
+        assert!(link.retry_pending());
+
+        // Still early: the sweep leaves it alone.
+        link.drop_expired_retry(t0 + wait - Duration::from_millis(1));
+        assert!(link.retry_pending());
+
+        // Lapsed: the sweep forgets it, so `retry_pending` means
+        // exactly "still being withheld" everywhere downstream, and no
+        // stale instant is left to poison `nearest_deadline`.
+        link.drop_expired_retry(t0 + wait);
+        assert!(!link.retry_pending());
+        assert_eq!(link.retry_at, None);
+    }
+
+    #[test]
+    fn a_successful_connect_resets_the_schedule() {
+        let t0 = Instant::now();
+        let mut link = Link::default();
+        for _ in 0..3 {
+            link.schedule_retry(t0);
+        }
+        link.clear_retry();
+        assert!(!link.retry_pending());
+        // Back to the shortest delay, not the ceiling: a link that has
+        // been up since the last failure has not earned a long wait.
+        link.schedule_retry(t0);
+        assert_eq!(link.retry_at, Some(t0 + RETRY_BACKOFF[0]));
+    }
+}

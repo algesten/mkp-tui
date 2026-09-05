@@ -97,15 +97,16 @@ pub fn history_forward(sources: &mut Sources) -> bool {
     true
 }
 
-/// A new connect attempt acknowledges any prior `Closed` state — the
-/// link transitions back to `Idle` so `execute::apply_link` will act
-/// on the fresh intent. Without this, every reconnect after a
-/// disconnect is silently dropped.
-fn ack_closed(link: &mut Link) {
-    if link.phase == LinkPhase::Closed {
-        link.phase = LinkPhase::Idle;
-        link.last_err = None;
-    }
+/// Clear the error left by a previous failure so a fresh attempt is not
+/// reported under the old one.
+///
+/// This used to also rewrite `Closed` back to `Idle`, because
+/// `apply_link` refused to dial from `Closed` — which is precisely why
+/// only user-driven paths could recover from a drop. `Closed` is now
+/// just "nothing open" and dials like any other resting phase, so
+/// nothing has to be acknowledged.
+fn clear_last_error(link: &mut Link) {
+    link.last_err = None;
 }
 
 // ─── DispatchEvent ──────────────────────────────────────────────────
@@ -820,7 +821,7 @@ fn dispatch_cursor(ev: TuiCursorEvent, sources: &mut Sources, drivers: &Drivers)
 fn connect_to(sources: &mut Sources, server_name: String) {
     sources.intent.target = Some(Arc::from(server_name));
     sources.intent.pair_target = None;
-    ack_closed(&mut sources.link);
+    clear_last_error(&mut sources.link);
     // The user asked for this one now; a backoff accumulated by
     // earlier automatic retries must not delay it.
     sources.link.clear_retry();
@@ -829,7 +830,7 @@ fn connect_to(sources: &mut Sources, server_name: String) {
 
 fn begin_pair(sources: &mut Sources, server_name: String) {
     sources.intent.pair_target = Some(Arc::from(server_name));
-    ack_closed(&mut sources.link);
+    clear_last_error(&mut sources.link);
     sources.link.clear_retry();
     sources.probes.retry_unresolved();
 }

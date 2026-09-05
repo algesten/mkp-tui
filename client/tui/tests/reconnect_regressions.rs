@@ -46,6 +46,16 @@ fn ad(name: &str) -> ServerAd {
     }
 }
 
+/// Put a runtime where a real `LinkEvent::Closed` leaves it: the phase
+/// resting on `Closed` and the backoff armed. These tests drive sources
+/// directly (no mock server), so they stand in for ingest here; that a
+/// genuine drop arms the backoff is covered end-to-end by
+/// `reconnect.rs::a_closed_link_is_dialable_without_being_reset_first`.
+fn close_link(rt: &mut Runtime) {
+    rt.sources.link.phase = LinkPhase::Closed;
+    rt.sources.link.schedule_retry(rt.sources.clock.now);
+}
+
 fn key(code: KeyCode) -> UiInput {
     UiInput::Key(code, KeyModifiers::NONE, KeyEventKind::Press)
 }
@@ -129,20 +139,22 @@ fn enter_on_the_lost_modal_does_not_dial_an_offscreen_picker_row() {
 #[test]
 fn a_closed_pairing_link_is_throttled_before_redialling() {
     let mut rt = runtime();
+    rt.sources.discovery.upsert(ad("tower"));
     rt.sources.intent.pair_target = Some(Arc::from("tower"));
-    rt.sources.link.phase = LinkPhase::Closed;
+    close_link(&mut rt);
 
     rt.tick();
 
     assert_ne!(
         rt.sources.link.phase,
-        LinkPhase::Closed,
-        "the pairing link parked on Closed"
+        LinkPhase::Connecting,
+        "a closed pairing link redialled inside its own backoff — \
+         `pair_target` survives the close just as `target` does, so the \
+         throttle has to cover it too"
     );
     assert!(
-        rt.sources.link.retry_at.is_some(),
-        "a closed pairing link was released to Idle with no backoff — \
-         `pair_target` is still set, so the next tick redials at full speed"
+        rt.sources.link.retry_pending(),
+        "the pairing backoff was cleared rather than withheld"
     );
 }
 
@@ -245,9 +257,7 @@ fn the_armed_backoff_actually_delays_the_redial() {
     rt.sources.session.backend_name = Some(Arc::from("tower"));
 
     // The drop.
-    rt.sources.link.phase = LinkPhase::Closed;
-    rt.tick();
-
+    close_link(&mut rt);
     let retry_at = rt
         .sources
         .link
@@ -261,12 +271,12 @@ fn the_armed_backoff_actually_delays_the_redial() {
     // The very next tick, still well inside the backoff window.
     rt.tick();
 
-    assert_eq!(
+    assert_ne!(
         rt.sources.link.phase,
-        LinkPhase::Idle,
-        "the link redialled {:?} before its own backoff lapsed — \
-         `apply_link` never consults `retry_allowed`, and `intent.target` \
-         survived the close",
+        LinkPhase::Connecting,
+        "the link redialled {:?} before its own backoff lapsed — the gate \
+         has to sit on `link_action`, which dials from `intent`, not only \
+         on `apply_connect`, which merely writes it",
         retry_at.saturating_duration_since(Instant::now()),
     );
 }
@@ -311,15 +321,9 @@ fn giving_up_on_a_lost_server_stops_dialling_it() {
         });
     rt.sources.session.backend_name = Some(Arc::from("tower"));
 
-    // The drop, then the tick that releases the link to Idle and
-    // raises the modal.
-    rt.sources.link.phase = LinkPhase::Closed;
+    // The drop, then the tick that raises the modal.
+    close_link(&mut rt);
     rt.tick();
-    assert_eq!(
-        rt.sources.link.phase,
-        LinkPhase::Idle,
-        "fixture: link_ack should have released the link"
-    );
 
     rt.dispatch(mkpclient_runtime::TuiCursorEvent::ServerLostGiveUp);
 
@@ -328,10 +332,18 @@ fn giving_up_on_a_lost_server_stops_dialling_it() {
         "giving up left intent.target pointing at the abandoned server"
     );
 
+    // Give-up clears the backoff too, so nothing here is merely waiting:
+    // if intent still named the server, this tick would dial it.
     rt.tick();
     assert_eq!(
-        rt.sources.link.phase,
-        LinkPhase::Idle,
+        rt.sources.intent.target, None,
+        "intent.target came back after giving up"
+    );
+    assert!(
+        !matches!(
+            rt.sources.link.phase,
+            LinkPhase::Connecting | LinkPhase::Connected
+        ),
         "the runtime redialled the server the user had just given up on"
     );
 }

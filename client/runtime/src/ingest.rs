@@ -148,6 +148,18 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
 
+                // Rate-limit whatever dials next. The desired-state
+                // query will want this server again the moment the
+                // link reads as "nothing open", so without a backoff
+                // the redial goes out in the same tick and spins
+                // against a server that is refusing.
+                sources.link.schedule_retry(sources.clock.now);
+                // A probe left `Failed` or `InFlight` by the same
+                // outage would otherwise veto or block the address the
+                // redial needs; `link_action` treats both as reasons
+                // not to dial.
+                sources.probes.retry_unresolved();
+
                 // In-flight protocol state dies with the socket: these
                 // seqs will never be answered, and optimistic shadows
                 // can no longer be reconciled against a reply.

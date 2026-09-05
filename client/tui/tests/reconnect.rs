@@ -112,8 +112,18 @@ fn a_dropped_link_reconnects_without_user_input() {
     );
 }
 
+/// `LinkPhase::Closed` must be *dialable*, not a state the runtime has
+/// to be released from first.
+///
+/// The original bug was that `Closed` was a dead end: `apply_link` and
+/// `connect_action` both acted only from `Idle`, so a dropped link sat
+/// there until a user event called `ack_closed`. The fix is not to
+/// bounce the phase back to `Idle` — that would be a transition
+/// handler — but for `Closed` to read as "nothing open", so the same
+/// desired-state query that answers a first connect answers the
+/// reconnect (`EXAMPLE-ARCH.md`: "reconnection is emergent").
 #[test]
-fn the_link_never_parks_on_closed() {
+fn a_closed_link_is_dialable_without_being_reset_first() {
     let _ = env_logger::builder().is_test(true).try_init();
 
     let mut harness = Harness::connect(MockServer::start(certs::generate(), dropping_script()));
@@ -127,17 +137,30 @@ fn the_link_never_parks_on_closed() {
     });
     harness
         .tick_until(
-            |rt| rt.sources.session.lost_server.is_some(),
+            |rt| rt.sources.link.phase == LinkPhase::Closed,
             Duration::from_secs(5),
         )
-        .expect("the drop was never observed");
+        .expect("the drop never landed as Closed");
 
-    // `Closed` is an observation, not a resting state: by the end of
-    // the tick that saw it, the link is back to a phase the runtime
-    // can dial from. Parking here is what made the drop permanent.
-    assert_ne!(
-        harness.rt.sources.link.phase,
-        LinkPhase::Closed,
-        "the link parked on Closed — nothing can redial from there"
+    // The close armed a backoff rather than an acknowledgement, and the
+    // link is left resting on Closed — no phase rewriting behind its
+    // back.
+    assert!(
+        harness.rt.sources.link.retry_at.is_some(),
+        "the drop should have armed a backoff"
     );
+
+    // No dispatch. The link leaves Closed by dialling out of it, which
+    // is the whole claim.
+    harness
+        .tick_until(
+            |rt| {
+                matches!(
+                    rt.sources.link.phase,
+                    LinkPhase::Connecting | LinkPhase::Connected
+                )
+            },
+            Duration::from_secs(15),
+        )
+        .expect("the link never dialled out of Closed on its own");
 }

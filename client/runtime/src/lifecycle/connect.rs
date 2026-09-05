@@ -67,7 +67,10 @@ impl<'a> ConnectDiscoveryInput<'a> {
 
 #[derive(drv::Input)]
 pub struct ConnectLinkInput {
-    pub idle: bool,
+    /// No link open — `Idle` (never dialled, or torn down) or `Closed`
+    /// (dropped / refused). Both are "nothing to re-target", which is
+    /// what makes a reconnect the same question as a first connect.
+    pub nothing_open: bool,
     /// Has the reconnect backoff lapsed? A dropped link is released
     /// back to `Idle` immediately (see `lifecycle::link_ack`), so
     /// idleness alone would redial in the same tick and spin against
@@ -79,7 +82,7 @@ pub struct ConnectLinkInput {
 impl ConnectLinkInput {
     pub fn new(l: &Link) -> Self {
         Self {
-            idle: matches!(l.phase, LinkPhase::Idle),
+            nothing_open: matches!(l.phase, LinkPhase::Idle | LinkPhase::Closed),
             retry_pending: l.retry_pending(),
         }
     }
@@ -159,7 +162,7 @@ pub fn desired_connect<'a, 'b>(
 
 #[drv::memo(single)]
 pub fn connect_action(desired: DesiredConnect, link: ConnectLinkInput) -> ConnectAction {
-    if !link.idle || link.retry_pending {
+    if !link.nothing_open || link.retry_pending {
         return ConnectAction::Noop;
     }
     match desired {
@@ -290,8 +293,35 @@ mod tests {
         ));
     }
 
+    /// The heart of the fix, in one assertion: a dropped link is not a
+    /// state the runtime must be released from. `Closed` reads as
+    /// "nothing open", so the same query that answers a first connect
+    /// answers the reconnect, and no transition handler is involved
+    /// (`EXAMPLE-ARCH.md` § "Queries: desired state, not transitions" —
+    /// "reconnection is emergent").
     #[test]
-    fn a_link_that_is_not_idle_is_left_alone() {
+    fn a_closed_link_dials_exactly_as_an_idle_one_does() {
+        let mut d = Discovery::default();
+        d.upsert(ad("tower"));
+        let want = desired(&lost_session("tower"), &d);
+
+        for phase in [LinkPhase::Idle, LinkPhase::Closed] {
+            let link = Link {
+                phase: phase.clone(),
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    connect_action(want.clone(), ConnectLinkInput::new(&link)),
+                    ConnectAction::Connect { .. }
+                ),
+                "{phase:?} should dial"
+            );
+        }
+    }
+
+    #[test]
+    fn a_link_with_work_in_flight_is_left_alone() {
         let mut d = Discovery::default();
         d.upsert(ad("tower"));
         let want = desired(&lost_session("tower"), &d);
@@ -300,7 +330,6 @@ mod tests {
             LinkPhase::Connecting,
             LinkPhase::Connected,
             LinkPhase::Closing,
-            LinkPhase::Closed,
         ] {
             let link = Link {
                 phase: phase.clone(),
