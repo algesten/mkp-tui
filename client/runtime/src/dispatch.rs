@@ -15,7 +15,7 @@ use log::debug;
 use mkpclient_driver_credentials_core::CredCmd;
 use mkpclient_driver_link_core::LinkCmd;
 use mkpclient_driver_persist_core::{LoadKey, PersistCmd, SavedView};
-use mkpclient_state_link::{Link, LinkPhase};
+use mkpclient_state_link::LinkPhase;
 use mkpclient_state_pairing::PairingPhase;
 use mkpclient_state_ui_cursor::ColumnFocus;
 use mkpclient_state_ui_filter::FilterTarget;
@@ -95,17 +95,6 @@ pub fn history_forward(sources: &mut Sources) -> bool {
     sources.history.last_transition = Some(HistoryTransition::Forward);
     sources.history.transition_seq = sources.history.transition_seq.wrapping_add(1);
     true
-}
-
-/// A new connect attempt acknowledges any prior `Closed` state — the
-/// link transitions back to `Idle` so `execute::apply_link` will act
-/// on the fresh intent. Without this, every reconnect after a
-/// disconnect is silently dropped.
-fn ack_closed(link: &mut Link) {
-    if link.phase == LinkPhase::Closed {
-        link.phase = LinkPhase::Idle;
-        link.last_err = None;
-    }
 }
 
 // ─── DispatchEvent ──────────────────────────────────────────────────
@@ -820,12 +809,14 @@ fn dispatch_cursor(ev: TuiCursorEvent, sources: &mut Sources, drivers: &Drivers)
 fn connect_to(sources: &mut Sources, server_name: String) {
     sources.intent.target = Some(Arc::from(server_name));
     sources.intent.pair_target = None;
-    ack_closed(&mut sources.link);
+    // The ask is stamped so a link that closed *before* it is dialed
+    // right away rather than after the reconnect backoff.
+    sources.intent.requested_at = Some(sources.clock.now);
 }
 
 fn begin_pair(sources: &mut Sources, server_name: String) {
     sources.intent.pair_target = Some(Arc::from(server_name));
-    ack_closed(&mut sources.link);
+    sources.intent.requested_at = Some(sources.clock.now);
 }
 
 fn confirm_pair(sources: &mut Sources, drivers: &Drivers) {
@@ -848,10 +839,27 @@ fn reject_pair(sources: &mut Sources, drivers: &Drivers) {
 
 fn disconnect(sources: &mut Sources, drivers: &Drivers) {
     sources.intent.target = None;
+    sources.intent.pair_target = None;
+    // A disconnect the user asked for is where a reconnect stops:
+    // `auto_connect` is left armed by the lost-server path so a
+    // failing redial keeps trying, and `lost_server` is what keeps
+    // the modal up. Leaving either set would have some query act on
+    // a connection nobody wants.
+    sources.session.auto_connect = false;
+    sources.session.lost_server = None;
+    request_close(sources, drivers);
+}
+
+/// Ask the worker to tear the link down. The sync intent write is
+/// `Closing`: it keeps `link_action` from dialing until the worker
+/// reports `Closed`, and it marks the close as asked for, so ingest
+/// does not arm the reconnect backoff for it.
+fn request_close(sources: &mut Sources, drivers: &Drivers) {
     if matches!(
         sources.link.phase,
         LinkPhase::Connected | LinkPhase::Connecting
     ) {
+        sources.link.phase = LinkPhase::Closing;
         drivers.link.execute([&LinkCmd::Disconnect]);
     }
 }
@@ -859,7 +867,7 @@ fn disconnect(sources: &mut Sources, drivers: &Drivers) {
 fn forget(sources: &mut Sources, drivers: &Drivers, fingerprint: String) {
     if sources.intent.target.as_deref() == Some(fingerprint.as_str()) {
         sources.intent.target = None;
-        drivers.link.execute([&LinkCmd::Disconnect]);
+        request_close(sources, drivers);
     }
     drivers
         .credentials
@@ -2032,12 +2040,7 @@ fn server_picker_modal_select(sources: &mut Sources, drivers: &Drivers) {
     sources.session.auto_connect = true;
     sources.session.lost_server = None;
     connect_to(sources, name);
-    if matches!(
-        sources.link.phase,
-        LinkPhase::Connected | LinkPhase::Connecting
-    ) {
-        drivers.link.execute([&LinkCmd::Disconnect]);
-    }
+    request_close(sources, drivers);
     sources.screen = Screen::NowPlaying;
 }
 

@@ -39,4 +39,10 @@ pub struct Link {
     /// The last error the worker reported. Cleared on a successful
     /// `Connected`. UI can surface this in a status line.
     pub last_err: Option<std::sync::Arc<str>>,
+    /// When the worker last reported `Closed`, stamped from the
+    /// runtime clock at ingest. `None` while idle or once a later
+    /// `Connected` lands. The runtime's reconnect backoff is a query
+    /// over this field and the clock: a still-wanted link is
+    /// re-dialed once `closed_at + RECONNECT_DELAY` has passed.
+    pub closed_at: Option<std::time::Instant>,
 }

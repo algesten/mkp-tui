@@ -1,6 +1,7 @@
 //! Step 2 of the lifecycle: keep `session.backend_name` in sync with
 //! the link's connected/closed state, persist the new "last server"
-//! on connect, save the current view + flag lost-server on close.
+//! on connect, and on close decide whether the server was *lost* —
+//! which arms the reconnect and the modal — or merely left.
 //!
 //! Spec §6: `desired_backend()` answers "what should `backend_name`
 //! be given link + probes + discovery?"; `backend_action()` diffs
@@ -16,6 +17,7 @@ use imbl::{HashMap as ImHashMap, Vector};
 
 use mkpclient_driver_discovery_core::ServerAd;
 use mkpclient_state_discovery::Discovery;
+use mkpclient_state_intent::Intent;
 use mkpclient_state_link::{Link, LinkPhase};
 use mkpclient_state_probes::{ProbeOutcome, Probes};
 use mkpclient_state_ui_session::UiSession;
@@ -69,6 +71,24 @@ impl<'a> ProbesByAddrInput<'a> {
     }
 }
 
+/// Which server the runtime still means to be on, if any. `intent`
+/// is what `apply_link` dials from, so comparing it with the backend
+/// that just went away tells a loss from a departure: a switch has
+/// already re-pointed it at the *new* server, and a disconnect has
+/// emptied it.
+#[derive(drv::Input)]
+pub struct BackendIntentInput<'a> {
+    pub target: Option<&'a std::sync::Arc<str>>,
+}
+
+impl<'a> BackendIntentInput<'a> {
+    pub fn new(i: &'a Intent) -> Self {
+        Self {
+            target: i.target.as_ref(),
+        }
+    }
+}
+
 #[derive(drv::Input)]
 pub struct BackendNameInput<'a> {
     pub backend_name: Option<&'a std::sync::Arc<str>>,
@@ -104,12 +124,17 @@ pub enum BackendAction {
     Set {
         name: String,
     },
-    /// Link closed while a backend was active. Trampoline saves the
-    /// current view, stashes the old backend as `lost_server`, clears
-    /// `backend_name`, and resets the auto-connect / auto-restored
-    /// guards.
+    /// Link closed while a backend was active. Trampoline clears
+    /// `backend_name` and resets the auto-restored guard.
     Clear {
         old: String,
+        /// The server was lost rather than left: intent still names
+        /// it. Only then is `old` stashed as `lost_server` and
+        /// `auto_connect` re-armed — the two facts that make the
+        /// runtime dial it again and keep the modal up. A switch or
+        /// a disconnect is not a loss, and must not reconnect the
+        /// user to the server they just left.
+        lost: bool,
     },
 }
 
@@ -143,7 +168,11 @@ pub fn desired_backend<'a, 'b, 'c>(
 }
 
 #[drv::memo(single)]
-pub fn backend_action<'a>(desired: DesiredBackend, current: BackendNameInput<'a>) -> BackendAction {
+pub fn backend_action<'a, 'b>(
+    desired: DesiredBackend,
+    current: BackendNameInput<'a>,
+    intent: BackendIntentInput<'b>,
+) -> BackendAction {
     match (desired, current.backend_name) {
         (DesiredBackend::Connected { name }, None) => BackendAction::Set { name },
         (DesiredBackend::Connected { name }, Some(cur)) if &**cur != name.as_str() => {
@@ -155,6 +184,7 @@ pub fn backend_action<'a>(desired: DesiredBackend, current: BackendNameInput<'a>
         }
         (DesiredBackend::Disconnected, Some(cur)) => BackendAction::Clear {
             old: cur.to_string(),
+            lost: intent.target == Some(cur),
         },
         _ => BackendAction::Noop,
     }
@@ -168,7 +198,11 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
         DiscoveryAdsInput::new(&sources.discovery),
         ProbesByAddrInput::new(&sources.probes),
     );
-    let action = backend_action(desired, BackendNameInput::new(&sources.session));
+    let action = backend_action(
+        desired,
+        BackendNameInput::new(&sources.session),
+        BackendIntentInput::new(&sources.intent),
+    );
     match action {
         BackendAction::Noop => {}
         BackendAction::Set { name } => {
@@ -195,17 +229,83 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
                 drivers,
             );
         }
-        BackendAction::Clear { old } => {
+        BackendAction::Clear { old, lost } => {
             // No save fires here: view-persist has been mirroring
             // every navigation for the outgoing backend on every
             // tick, so the disk is already up to date.
-            sources.session.lost_server = Some(Arc::from(old.as_str()));
+            if lost {
+                sources.session.lost_server = Some(Arc::from(old.as_str()));
+                sources.session.auto_connect = true;
+            }
             sources.session.backend_name = None;
-            sources.session.auto_connect = true;
             sources.session.auto_restored_view = false;
             sources.persist.last_view_saved_key = None;
             sources.persist.last_add_playlist_saved = None;
             sources.persist.last_pushed_search_task = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn on(backend: &str) -> UiSession {
+        UiSession {
+            backend_name: Some(Arc::from(backend)),
+            ..Default::default()
+        }
+    }
+
+    fn wanting(target: Option<&str>) -> Intent {
+        Intent {
+            target: target.map(Arc::from),
+            ..Default::default()
+        }
+    }
+
+    fn act(session: &UiSession, intent: &Intent) -> BackendAction {
+        backend_action(
+            DesiredBackend::Disconnected,
+            BackendNameInput::new(session),
+            BackendIntentInput::new(intent),
+        )
+    }
+
+    #[test]
+    fn a_close_while_still_wanting_the_server_is_a_loss() {
+        assert_eq!(
+            act(&on("tower"), &wanting(Some("tower"))),
+            BackendAction::Clear {
+                old: "tower".into(),
+                lost: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_switch_or_a_disconnect_is_not_a_loss() {
+        assert_eq!(
+            act(&on("tower"), &wanting(Some("studio"))),
+            BackendAction::Clear {
+                old: "tower".into(),
+                lost: false,
+            }
+        );
+        assert_eq!(
+            act(&on("tower"), &wanting(None)),
+            BackendAction::Clear {
+                old: "tower".into(),
+                lost: false,
+            }
+        );
+    }
+
+    #[test]
+    fn nothing_active_means_nothing_to_clear() {
+        assert_eq!(
+            act(&UiSession::default(), &wanting(Some("tower"))),
+            BackendAction::Noop
+        );
     }
 }

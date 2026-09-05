@@ -118,6 +118,12 @@ impl Harness {
         self.rt.tick();
     }
 
+    /// The mDNS name the mock was injected under.
+    #[allow(dead_code)]
+    pub fn server_name(&self) -> String {
+        format!("mock-{}", self.mock.addr.port())
+    }
+
     /// Run ticks (with `wait_for_wake` between) until `cond(rt)` is
     /// true, or the deadline elapses.
     pub fn tick_until<F: Fn(&Runtime) -> bool>(
