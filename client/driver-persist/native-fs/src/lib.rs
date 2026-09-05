@@ -310,11 +310,9 @@ fn clear_view(key: &ViewKey) {
     if let Some(p) = view_path(key) {
         let _ = std::fs::remove_file(p);
     }
-    // Otherwise an unclaimed 1.0.0 view would come straight back on
-    // the next load.
-    if let Some(p) = legacy_view_path(key) {
-        let _ = std::fs::remove_file(p);
-    }
+    // The unclaimed 1.0.0 file is deliberately left alone: it is not
+    // this backend's to delete, and a later `load_view` returning it
+    // is the inheritance rule working, not a resurrection.
 }
 
 // ─── search_history ─────────────────────────────────────────────────
@@ -550,18 +548,6 @@ mod view_tests {
                 playlist_id_of(&load_view(&tidal).unwrap()),
                 "tidal-playlist"
             );
-        })
-    }
-
-    /// Clearing has to take the unclaimed 1.0.0 file with it, or the
-    /// next load reads it straight back.
-    #[test]
-    fn clearing_a_view_also_drops_an_unclaimed_1_0_0_file() {
-        with_config_root(|root| {
-            write_legacy_view(root, "porch", "from-1-0-0");
-            let key = ViewKey::new("porch", "musickit");
-            clear_view(&key);
-            assert!(load_view(&key).is_none());
         })
     }
 }

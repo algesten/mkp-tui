@@ -192,11 +192,12 @@ fn begin_backend_session(sources: &mut Sources, backend: &str) {
     reset_server_derived_state(sources);
     sources.server.backend = Some(Arc::from(backend));
 
-    // Unlike a close, a swap also discards navigation: `mode` and
-    // the back / forward stacks hold album and artist ids that the
-    // new backend has never heard of. A close keeps them, because
-    // reconnecting to the same backend lands the user back where
-    // they were.
+    // Navigation goes too: `mode` and the back / forward stacks hold
+    // album and artist ids that only the previous backend can
+    // resolve. This runs on reconnect as well — the `Hello` reply is
+    // itself a `BackendChanged` — so the back / forward stacks do not
+    // survive a dropped link. What the user sees is restored from
+    // disk by the restore lifecycle; the stacks behind it are not.
     sources.history = Default::default();
 
     // Let the restore lifecycle re-run for the new backend once its
