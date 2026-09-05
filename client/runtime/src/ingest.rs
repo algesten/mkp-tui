@@ -156,11 +156,13 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
 /// must be true of both: catalogue state, meaningless once that
 /// server or its backend is gone.
 ///
-/// `server` is deliberately absent. `server.backend` is a fact
-/// ingest owns, and a swap must not blank the frame that announced
-/// it; the close path, where the fact really is gone, clears the
-/// source itself.
+/// The `server` source is only partly reset. `play` describes the
+/// outgoing catalogue and goes with it; `backend` is a fact ingest
+/// owns, and a swap must not blank the frame that just announced it.
+/// The close path, where that fact really is gone, clears the source
+/// itself.
 pub(crate) fn reset_server_derived_state(sources: &mut Sources) {
+    sources.server.play = None;
     sources.responses.clear();
     sources.queue = Default::default();
     sources.playlists = Default::default();
