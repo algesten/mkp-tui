@@ -59,38 +59,8 @@ impl Harness {
         };
         let mut rt = mkpclient_runtime_desktop::start_for_test(trace, peer);
 
-        // Inject discovery — the runtime's discovery driver listens
-        // for mDNS, but we go around it and write straight to the
-        // source.
-        let mock_addr = mock.addr;
-        let server_name = format!("mock-{}", mock_addr.port());
-        let addr_v4 = match mock_addr.ip() {
-            std::net::IpAddr::V4(v4) => v4,
-            std::net::IpAddr::V6(_) => Ipv4Addr::LOCALHOST,
-        };
-        rt.sources.discovery.upsert(ServerAd {
-            name: server_name.clone(),
-            host: "127.0.0.1".into(),
-            addr: addr_v4,
-            port: mock_addr.port(),
-        });
-
-        // Inject probe fingerprint so `execute` doesn't need to
-        // open a TLS probe connection first.
-        let addr_key = format!("{}:{}", mock_addr.ip(), mock_addr.port());
+        let server_name = publish(&mut rt, &mock);
         let fingerprint = mock.certs.fingerprint.clone();
-        rt.sources
-            .probes
-            .set_fingerprint(addr_key.clone(), fingerprint.clone());
-
-        // Inject credential keyed on fingerprint.
-        rt.sources.credentials.insert(PairingEntry {
-            fingerprint: fingerprint.clone(),
-            host: "127.0.0.1".into(),
-            server_cert_pem: mock.certs.server_cert_pem.clone(),
-            client_cert_pem: mock.certs.client_cert_pem.clone(),
-            client_key_pem: mock.certs.client_key_pem.clone(),
-        });
 
         rt.dispatch(SemanticEvent::ConnectTo { server_name });
 
@@ -144,4 +114,49 @@ impl Harness {
     pub fn dispatch<E: Into<DispatchEvent>>(&mut self, ev: E) {
         self.rt.dispatch(ev);
     }
+
+    /// Make a second server reachable without connecting to it, so a
+    /// test can exercise switching between two live peers. Returns
+    /// its mDNS name.
+    #[allow(dead_code)]
+    pub fn publish(&mut self, mock: &MockServer) -> String {
+        publish(&mut self.rt, mock)
+    }
+}
+
+/// Make `mock` reachable to the runtime: publish its mDNS ad, seed
+/// the probe fingerprint so `execute` need not open a TLS probe
+/// first, and store a pairing credential for it. Returns the mDNS
+/// name it was published under.
+fn publish(rt: &mut Runtime, mock: &MockServer) -> String {
+    // The runtime's discovery driver listens for mDNS; we go around
+    // it and write straight to the source.
+    let mock_addr = mock.addr;
+    let server_name = format!("mock-{}", mock_addr.port());
+    let addr_v4 = match mock_addr.ip() {
+        std::net::IpAddr::V4(v4) => v4,
+        std::net::IpAddr::V6(_) => Ipv4Addr::LOCALHOST,
+    };
+    rt.sources.discovery.upsert(ServerAd {
+        name: server_name.clone(),
+        host: format!("host-{}", mock_addr.port()),
+        addr: addr_v4,
+        port: mock_addr.port(),
+    });
+
+    let addr_key = format!("{}:{}", mock_addr.ip(), mock_addr.port());
+    let fingerprint = mock.certs.fingerprint.clone();
+    rt.sources
+        .probes
+        .set_fingerprint(addr_key, fingerprint.clone());
+
+    rt.sources.credentials.insert(PairingEntry {
+        fingerprint,
+        host: "127.0.0.1".into(),
+        server_cert_pem: mock.certs.server_cert_pem.clone(),
+        client_cert_pem: mock.certs.client_cert_pem.clone(),
+        client_key_pem: mock.certs.client_key_pem.clone(),
+    });
+
+    server_name
 }

@@ -145,7 +145,10 @@ pub enum BackendAction {
         /// stashed as `lost_server` and `auto_connect` re-armed, which
         /// together are what make the runtime dial it again. An
         /// explicit disconnect that re-armed them would reconnect the
-        /// user to the server they just left.
+        /// user to the server they just left; a switch that re-armed
+        /// them would drag them back off the server they just chose.
+        /// When it is false the outgoing view is discarded too —
+        /// nothing is coming back to that server.
         lost: bool,
     },
 }
@@ -209,10 +212,22 @@ pub fn backend_action<'a, 'b>(
                 drop_retained: true,
             }
         }
-        (DesiredBackend::Disconnected, Some(cur)) => BackendAction::Clear {
-            old: cur.to_string(),
-            lost: intent.target.is_some() || intent.pair_target.is_some(),
-        },
+        (DesiredBackend::Disconnected, Some(cur)) => {
+            // An empty intent means the user left — nothing to
+            // recover. But an intent naming *someone else* is not a
+            // loss either: it is the teardown half of a switch, which
+            // has to take the old link down before it can bring the
+            // new one up. Only a close that leaves us still pointed
+            // at the server that just went away is a loss.
+            let lost = match intent.target.or(intent.pair_target) {
+                Some(t) => **t == **cur,
+                None => false,
+            };
+            BackendAction::Clear {
+                old: cur.to_string(),
+                lost,
+            }
+        }
         _ => BackendAction::Noop,
     }
 }
@@ -237,15 +252,8 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
             drop_retained,
         } => {
             if drop_retained {
-                // Foreign data from a server we are no longer on —
-                // including `server.backend`, which names the music
-                // backend the retained rows came from.
-                sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
+                // Foreign data from a server we are no longer on.
+                sources.discard_server_view();
             }
             // Sync intent writes first.
             sources.session.backend_name = Some(Arc::from(name.as_str()));
@@ -277,6 +285,16 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
             if lost {
                 sources.session.lost_server = Some(Arc::from(old.as_str()));
                 sources.session.auto_connect = true;
+            } else {
+                // Left, not lost. Nothing is coming back to this
+                // server, so the view it painted goes now rather than
+                // being retained for a reconnect that will never
+                // happen — otherwise it stays on screen under the new
+                // server's name until that server's own replies land.
+                // Leaving `lost_server` clear is also what keeps the
+                // lost-server modal down, and what leaves `Set`'s
+                // `drop_retained` with nothing left to decide.
+                sources.discard_server_view();
             }
             sources.session.backend_name = None;
             sources.session.auto_restored_view = false;
@@ -396,6 +414,67 @@ mod tests {
             BackendAction::Clear {
                 old: "tower".into(),
                 lost: false,
+            }
+        );
+    }
+
+    /// Nor is a close that happens because the user picked a
+    /// *different* server. The runtime has to take the old link down
+    /// before it can bring the new one up, and `intent` already names
+    /// where it is going.
+    #[test]
+    fn a_close_while_dialling_elsewhere_is_a_switch_not_a_loss() {
+        let s = session(Some("tower"), None);
+        assert_eq!(
+            act_with(
+                DesiredBackend::Disconnected,
+                &s,
+                &Intent::default_wanting("laptop")
+            ),
+            BackendAction::Clear {
+                old: "tower".into(),
+                lost: false,
+            }
+        );
+    }
+
+    /// Same when the new server isn't paired yet:
+    /// `execute::fallback_target_to_pair` moves the name into
+    /// `pair_target`, and it can do so on the tick before the close is
+    /// observed.
+    #[test]
+    fn a_close_while_pairing_with_someone_else_is_also_a_switch() {
+        let s = session(Some("tower"), None);
+        let i = Intent {
+            target: None,
+            pair_target: Some(Arc::from("laptop")),
+        };
+        assert_eq!(
+            act_with(DesiredBackend::Disconnected, &s, &i),
+            BackendAction::Clear {
+                old: "tower".into(),
+                lost: false,
+            }
+        );
+    }
+
+    /// The switch's `Clear` discarded the view and left `lost_server`
+    /// clear, so landing on the new server has no retained data left
+    /// to weigh.
+    #[test]
+    fn a_switch_leaves_nothing_for_drop_retained_to_decide() {
+        let s = session(None, None);
+        assert_eq!(
+            act_with(
+                DesiredBackend::Connected {
+                    name: "laptop".into()
+                },
+                &s,
+                &Intent::default_wanting("laptop")
+            ),
+            BackendAction::Set {
+                name: "laptop".into(),
+                drop_retained: false,
             }
         );
     }

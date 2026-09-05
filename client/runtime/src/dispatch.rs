@@ -1826,12 +1826,7 @@ fn server_lost_give_up(sources: &mut Sources, drivers: &Drivers) {
     // worth keeping: the user is going to pick a different server, so
     // the old one's playlists / queue / tracks must not bleed into it.
     // (A plain drop keeps them — see `ingest`'s `LinkEvent::Closed`.)
-    sources.queue = Default::default();
-    sources.playlists = Default::default();
-    sources.playlist_tracks.clear();
-    sources.search.clear();
-    sources.artist_extras.clear();
-    sources.server = Default::default();
+    sources.discard_server_view();
     sources.link.clear_retry();
     sources.screen = Screen::NowPlaying;
     // Unconditionally: `intent` is what `apply_link` dials from, and it

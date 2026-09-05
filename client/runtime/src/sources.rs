@@ -81,3 +81,24 @@ pub struct Sources {
     pub pending_playlists: PendingPlaylists,
     pub session: UiSession,
 }
+
+impl Sources {
+    /// Discard everything the outgoing server's session painted,
+    /// `server.backend` included — it names the music backend the
+    /// retained rows came from.
+    ///
+    /// A drop deliberately keeps this data: the runtime is about to
+    /// redial the same server and refresh it in place. It is thrown
+    /// away only once it stops describing where we are — the user
+    /// giving up on the server, a reconnect that landed somewhere
+    /// else, or a switch the user asked for. Cursors are left to
+    /// `cursor_clamp`.
+    pub fn discard_server_view(&mut self) {
+        self.server = Default::default();
+        self.queue = Default::default();
+        self.playlists = Default::default();
+        self.playlist_tracks.clear();
+        self.search.clear();
+        self.artist_extras.clear();
+    }
+}
