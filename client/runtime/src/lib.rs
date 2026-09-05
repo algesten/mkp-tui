@@ -168,12 +168,6 @@ impl Runtime {
         while self.wake_rx.try_recv().is_ok() {}
     }
 
-    /// Block until something happens, computing the timeout from
-    /// `nearest_deadline(&self.sources)`. The single call site every
-    /// caller should reach for: anything that needs the loop to wake
-    /// at a wall-clock instant (spinner cadence, toast expiry, or
-    /// preview timeout) folds itself into
-    /// `nearest_deadline` and the loop stays unchanged.
     /// How long the loop would block right now. A deadline already in
     /// the past yields `ZERO` — "wake immediately" — rather than
     /// collapsing into the no-deadline fallback, which would park the
@@ -186,6 +180,12 @@ impl Runtime {
         }
     }
 
+    /// Block until something happens, computing the timeout from
+    /// `nearest_deadline(&self.sources)`. The single call site every
+    /// caller should reach for: anything that needs the loop to wake
+    /// at a wall-clock instant (spinner cadence, toast expiry, preview
+    /// timeout, reconnect backoff) folds itself into `nearest_deadline`
+    /// and the loop stays unchanged.
     pub fn wait_for_next_deadline(&self) {
         self.wait_for_wake(self.next_timeout());
     }

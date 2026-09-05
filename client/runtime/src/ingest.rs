@@ -132,7 +132,17 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 info!("ingest: ProbeResult addr={addr} result={result:?}");
                 match result.clone() {
                     Ok(fingerprint) => sources.probes.set_fingerprint(addr, fingerprint),
-                    Err(msg) => sources.probes.set_failed(addr, msg),
+                    Err(msg) => {
+                        sources.probes.set_failed(addr, msg);
+                        // A probe closes no link, so without this the
+                        // attempt would end here: no deadline to wake
+                        // for, nothing to re-arm. The server binding an
+                        // OS-assigned port makes this the ordinary
+                        // reconnect path — a restart moves the port, so
+                        // the redial must re-probe, and a probe fired
+                        // before the new listener is up fails.
+                        sources.link.schedule_retry(sources.clock.now);
+                    }
                 }
                 continue;
             }
@@ -244,13 +254,20 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
     }
     match &response.msg {
         ServerMsg::BackendChanged { backend } => {
+            // The server answers *every* `Hello` with this, so on a
+            // reconnect it arrives naming the backend we were already
+            // on. Only an actual change invalidates anything; treating
+            // the handshake reply as a swap wiped the retained view one
+            // round trip after the link came back, with the modal
+            // already closed.
+            let changed = sources.server.backend.as_deref() != Some(backend.as_str());
             sources.server.backend = Some(Arc::from(backend.as_str()));
-            // Backend initialization / swap invalidates all state
-            // derived from the prior backend.
-            sources.queue = Default::default();
-            sources.playlists = Default::default();
-            sources.playlist_tracks.clear();
-            sources.search.clear();
+            if changed {
+                sources.queue = Default::default();
+                sources.playlists = Default::default();
+                sources.playlist_tracks.clear();
+                sources.search.clear();
+            }
             return true;
         }
         ServerMsg::Playlists { playlists } => {

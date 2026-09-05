@@ -347,3 +347,35 @@ fn giving_up_on_a_lost_server_stops_dialling_it() {
         "the runtime redialled the server the user had just given up on"
     );
 }
+
+/// Making the modal own its keys closed the last way out of the
+/// application while a server is unreachable.
+///
+/// `Action::Quit` (Ctrl-C) is gated on `Screen::NowPlaying`, which is
+/// right for transient modals — Esc dismisses those. The reconnect
+/// modal is different: it stays up for the length of the outage, and
+/// its Esc deliberately means "keep waiting". Before the pre-connect
+/// picker stopped swallowing its keys, Esc there was `DiscoveringQuit`
+/// and did exit; afterwards nothing did.
+#[test]
+fn the_reconnect_modal_can_still_be_quit() {
+    let mut rt = runtime();
+    let mut app = AppState::default();
+    reconnecting(&mut rt);
+
+    let quit = translate(
+        UiInput::Key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ),
+        &mut rt,
+        &mut app,
+    );
+
+    assert!(
+        quit,
+        "Ctrl-C did not quit while the reconnect modal was up — with Esc \
+         meaning \"keep waiting\" there is then no way out at all"
+    );
+}

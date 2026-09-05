@@ -107,12 +107,18 @@ pub fn translate(ev: UiInput, rt: &mut Runtime, app: &mut AppState) -> bool {
         return false;
     }
 
-    if matches!(rt.sources.screen, Screen::NowPlaying)
-        && matches!(
-            action(rt, KeyContext::Global, code, mods),
-            Some(Action::Quit)
-        )
-    {
+    // Quit is allowed from the reconnect modal as well as NowPlaying.
+    // Other modals are transient and Esc dismisses them; this one can
+    // be up for the length of an outage, and its Esc deliberately means
+    // "keep waiting" — so without this there is no way out of the
+    // application at all while a server is unreachable.
+    if matches!(
+        rt.sources.screen,
+        Screen::NowPlaying | Screen::ServerLostModal { .. }
+    ) && matches!(
+        action(rt, KeyContext::Global, code, mods),
+        Some(Action::Quit)
+    ) {
         return true;
     }
 

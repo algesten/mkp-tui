@@ -16,6 +16,7 @@ use imbl::{HashMap as ImHashMap, Vector};
 
 use mkpclient_driver_discovery_core::ServerAd;
 use mkpclient_state_discovery::Discovery;
+use mkpclient_state_intent::Intent;
 use mkpclient_state_link::{Link, LinkPhase};
 use mkpclient_state_probes::{ProbeOutcome, Probes};
 use mkpclient_state_ui_session::UiSession;
@@ -69,6 +70,24 @@ impl<'a> ProbesByAddrInput<'a> {
     }
 }
 
+/// Does anything still name a server to be on? `intent` is what
+/// `apply_link` dials from, so an empty intent is the runtime's own
+/// record that the close was asked for rather than suffered.
+#[derive(drv::Input)]
+pub struct BackendIntentInput<'a> {
+    pub target: Option<&'a std::sync::Arc<str>>,
+    pub pair_target: Option<&'a std::sync::Arc<str>>,
+}
+
+impl<'a> BackendIntentInput<'a> {
+    pub fn new(i: &'a Intent) -> Self {
+        Self {
+            target: i.target.as_ref(),
+            pair_target: i.pair_target.as_ref(),
+        }
+    }
+}
+
 #[derive(drv::Input)]
 pub struct BackendNameInput<'a> {
     pub backend_name: Option<&'a std::sync::Arc<str>>,
@@ -118,12 +137,16 @@ pub enum BackendAction {
         /// screen for the duration of the refetch.
         drop_retained: bool,
     },
-    /// Link closed while a backend was active. Trampoline saves the
-    /// current view, stashes the old backend as `lost_server`, clears
-    /// `backend_name`, and resets the auto-connect / auto-restored
-    /// guards.
+    /// Link closed while a backend was active. Trampoline clears
+    /// `backend_name` and resets the auto-restored guard.
     Clear {
         old: String,
+        /// Was the server lost, rather than left? Only then is `old`
+        /// stashed as `lost_server` and `auto_connect` re-armed, which
+        /// together are what make the runtime dial it again. An
+        /// explicit disconnect that re-armed them would reconnect the
+        /// user to the server they just left.
+        lost: bool,
     },
 }
 
@@ -157,7 +180,11 @@ pub fn desired_backend<'a, 'b, 'c>(
 }
 
 #[drv::memo(single)]
-pub fn backend_action<'a>(desired: DesiredBackend, current: BackendNameInput<'a>) -> BackendAction {
+pub fn backend_action<'a, 'b>(
+    desired: DesiredBackend,
+    current: BackendNameInput<'a>,
+    intent: BackendIntentInput<'b>,
+) -> BackendAction {
     match (desired, current.backend_name) {
         (DesiredBackend::Connected { name }, None) => {
             // Coming up from a drop: `lost_server` names whoever the
@@ -184,6 +211,7 @@ pub fn backend_action<'a>(desired: DesiredBackend, current: BackendNameInput<'a>
         }
         (DesiredBackend::Disconnected, Some(cur)) => BackendAction::Clear {
             old: cur.to_string(),
+            lost: intent.target.is_some() || intent.pair_target.is_some(),
         },
         _ => BackendAction::Noop,
     }
@@ -197,7 +225,11 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
         DiscoveryAdsInput::new(&sources.discovery),
         ProbesByAddrInput::new(&sources.probes),
     );
-    let action = backend_action(desired, BackendNameInput::new(&sources.session));
+    let action = backend_action(
+        desired,
+        BackendNameInput::new(&sources.session),
+        BackendIntentInput::new(&sources.intent),
+    );
     match action {
         BackendAction::Noop => {}
         BackendAction::Set {
@@ -238,13 +270,15 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
                 drivers,
             );
         }
-        BackendAction::Clear { old } => {
+        BackendAction::Clear { old, lost } => {
             // No save fires here: view-persist has been mirroring
             // every navigation for the outgoing backend on every
             // tick, so the disk is already up to date.
-            sources.session.lost_server = Some(Arc::from(old.as_str()));
+            if lost {
+                sources.session.lost_server = Some(Arc::from(old.as_str()));
+                sources.session.auto_connect = true;
+            }
             sources.session.backend_name = None;
-            sources.session.auto_connect = true;
             sources.session.auto_restored_view = false;
             sources.persist.last_view_saved_key = None;
             sources.persist.last_add_playlist_saved = None;
@@ -266,7 +300,16 @@ mod tests {
     }
 
     fn act(desired: DesiredBackend, s: &UiSession) -> BackendAction {
-        backend_action(desired, BackendNameInput::new(s))
+        // Default intent: still wanting a server, i.e. a genuine drop.
+        act_with(desired, s, &Intent::default_wanting("tower"))
+    }
+
+    fn act_with(desired: DesiredBackend, s: &UiSession, i: &Intent) -> BackendAction {
+        backend_action(
+            desired,
+            BackendNameInput::new(s),
+            BackendIntentInput::new(i),
+        )
     }
 
     #[test]
@@ -330,13 +373,30 @@ mod tests {
         assert_eq!(
             act(DesiredBackend::Disconnected, &s),
             BackendAction::Clear {
-                old: "tower".into()
+                old: "tower".into(),
+                lost: true,
             }
         );
         // Nothing was connected — nothing to clear.
         assert_eq!(
             act(DesiredBackend::Disconnected, &session(None, None)),
             BackendAction::Noop
+        );
+    }
+
+    /// The difference between a server that went away and one the user
+    /// left. Only the first should be stashed as `lost_server` and
+    /// re-arm `auto_connect` — doing that for a deliberate disconnect
+    /// reconnects the user to the server they just walked away from.
+    #[test]
+    fn a_close_the_user_asked_for_is_not_a_loss() {
+        let s = session(Some("tower"), None);
+        assert_eq!(
+            act_with(DesiredBackend::Disconnected, &s, &Intent::default()),
+            BackendAction::Clear {
+                old: "tower".into(),
+                lost: false,
+            }
         );
     }
 }

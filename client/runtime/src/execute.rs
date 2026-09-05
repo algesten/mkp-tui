@@ -242,8 +242,13 @@ pub fn link_action<'a, 'b, 'c, 'd, 'e>(
             }
 
             match probes.by_addr.get(&addr) {
-                None => LinkAction::Probe { addr },
-                Some(ProbeOutcome::InFlight) | Some(ProbeOutcome::Failed(_)) => LinkAction::Noop,
+                // Never probed, or the last probe failed: probe again.
+                // A failure is a fact about one moment, and the retry
+                // gate above is what stops this becoming a tight loop —
+                // treating it as a permanent veto made the whole
+                // reconnect a one-shot.
+                None | Some(ProbeOutcome::Failed(_)) => LinkAction::Probe { addr },
+                Some(ProbeOutcome::InFlight) => LinkAction::Noop,
                 Some(ProbeOutcome::Fingerprint(fp)) => {
                     let Some(entry) = creds.entries.get(fp) else {
                         return LinkAction::Noop;
