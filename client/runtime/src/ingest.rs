@@ -187,8 +187,11 @@ fn begin_backend_session(sources: &mut Sources, backend: &str) {
     sources.history = Default::default();
 
     // Let the restore lifecycle re-run for the new backend once its
-    // playlists land.
+    // playlists land. Dropping the save-dedup key with it means the
+    // new backend's first view is written even in the unlikely event
+    // that it has the same identity as the outgoing backend's last.
     sources.session.auto_restored_view = false;
+    sources.persist.last_view_saved_key = None;
 
     sources.requests.push(ClientMsg::GetState, None);
     let task_id = sources.requests.alloc_task_id();
@@ -582,14 +585,14 @@ fn ingest_persist(sources: &mut Sources, drivers: &Drivers) {
                     sources.session.preferred_server = name.map(Arc::from);
                 }
             }
-            PersistEvent::ViewLoaded { backend, view } => {
+            PersistEvent::ViewLoaded { key, view } => {
                 sources
                     .persist
                     .loads_in_flight
-                    .remove(&LoadKey::View(backend.clone()));
+                    .remove(&LoadKey::View(key.clone()));
                 // Stash for `lifecycle::restore`'s memo pair. The
                 // trampoline reads, applies, and clears in one shot.
-                sources.persist.last_view_load = Some(ViewLoadResult { backend, view });
+                sources.persist.last_view_load = Some(ViewLoadResult { key, view });
             }
             PersistEvent::SearchHistoryLoaded { backend, history } => {
                 sources

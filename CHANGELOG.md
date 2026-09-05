@@ -3,6 +3,8 @@
 * Switching music backend on the server no longer leaves the client
   stuck on an empty playlist column
 * Exact playlist track counts appear again after connecting
+* The remembered view is kept per server and music backend, so
+  switching backend restores the right one
 
 # 1.0.0
 

@@ -99,6 +99,30 @@ pub const SEARCH_HISTORY_LIMIT: usize = 10;
 
 // ─── ABI ────────────────────────────────────────────────────────────
 
+/// Identity of a saved view: which server, and which music backend
+/// that server was playing from.
+///
+/// Both halves are needed. A server can swap backend under a
+/// connected client, and the catalogues share no ids — a view
+/// pointing at a MusicKit album means nothing once the same server
+/// is serving Tidal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, drv::Input)]
+pub struct ViewKey {
+    /// Server name as advertised over mDNS.
+    pub server: String,
+    /// Music backend the server reported via `BackendChanged`.
+    pub backend: String,
+}
+
+impl ViewKey {
+    pub fn new(server: impl Into<String>, backend: impl Into<String>) -> Self {
+        Self {
+            server: server.into(),
+            backend: backend.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum PersistCmd {
     LoadKeybindings,
@@ -110,14 +134,14 @@ pub enum PersistCmd {
         name: String,
     },
     LoadView {
-        backend: String,
+        key: ViewKey,
     },
     SaveView {
-        backend: String,
+        key: ViewKey,
         view: SavedView,
     },
     ClearView {
-        backend: String,
+        key: ViewKey,
     },
     LoadSearchHistory {
         backend: String,
@@ -148,7 +172,7 @@ pub enum PersistEvent {
         name: Option<String>,
     },
     ViewLoaded {
-        backend: String,
+        key: ViewKey,
         view: Option<SavedView>,
     },
     SearchHistoryLoaded {
@@ -172,7 +196,7 @@ pub enum PersistEvent {
 pub enum LoadKey {
     Keybindings,
     LastServer,
-    View(String),
+    View(ViewKey),
     SearchHistory(String),
     LastAddPlaylist(String),
 }
@@ -211,7 +235,7 @@ pub struct Persist {
 
 #[derive(Debug, Clone, PartialEq, Eq, drv::Input)]
 pub struct ViewLoadResult {
-    pub backend: String,
+    pub key: ViewKey,
     pub view: Option<SavedView>,
 }
 
@@ -264,8 +288,8 @@ impl PersistDriver {
             match cmd {
                 PersistCmd::LoadKeybindings => self.trace.persist_load(&LoadKey::Keybindings),
                 PersistCmd::LoadLastServer => self.trace.persist_load(&LoadKey::LastServer),
-                PersistCmd::LoadView { backend } => {
-                    self.trace.persist_load(&LoadKey::View(backend.clone()))
+                PersistCmd::LoadView { key } => {
+                    self.trace.persist_load(&LoadKey::View(key.clone()))
                 }
                 PersistCmd::LoadSearchHistory { backend } => self
                     .trace
@@ -301,8 +325,8 @@ impl PersistDriver {
                 PersistEvent::LastServerLoaded { .. } => {
                     self.trace.persist_loaded(&LoadKey::LastServer)
                 }
-                PersistEvent::ViewLoaded { backend, .. } => {
-                    self.trace.persist_loaded(&LoadKey::View(backend.clone()))
+                PersistEvent::ViewLoaded { key, .. } => {
+                    self.trace.persist_loaded(&LoadKey::View(key.clone()))
                 }
                 PersistEvent::SearchHistoryLoaded { backend, .. } => self
                     .trace

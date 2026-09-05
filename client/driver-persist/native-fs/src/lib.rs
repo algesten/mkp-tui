@@ -6,11 +6,18 @@
 //! ```text
 //! ~/.config/mkp/
 //!   last_server                    plain text — preferred server NAME
-//!   {backend_name}/
-//!     last_view                    TOML — SavedView (per-backend)
+//!   {server_name}/
 //!     search_history               TOML — SearchHistory
 //!     last_add_playlist            plain text — playlist id
+//!     {music_backend}/
+//!       last_view                  TOML — SavedView
 //! ```
+//!
+//! The view sits under the music backend because album / artist /
+//! playlist ids belong to a catalogue, not to a server: the same
+//! server serves a different one after a backend swap. Releases up
+//! to 1.0.0 wrote `{server_name}/last_view`, which `load_view`
+//! still reads when no backend-qualified view exists yet.
 //!
 //! Server / backend names are sanitised for filesystem safety
 //! (no `/`, `\`, leading `.`). Atomic writes via temp-file-and-rename.
@@ -25,7 +32,7 @@ use log::warn;
 
 use mkpclient_core::Notifier;
 use mkpclient_driver_persist_core::{
-    PersistCmd, PersistDriver, PersistEvent, SearchHistory, SearchHistoryItem, Trace,
+    PersistCmd, PersistDriver, PersistEvent, SearchHistory, SearchHistoryItem, Trace, ViewKey,
     SEARCH_HISTORY_LIMIT,
 };
 
@@ -80,19 +87,19 @@ fn handle(cmd: PersistCmd) -> Option<PersistEvent> {
                 err,
             }),
         },
-        PersistCmd::LoadView { backend } => Some(PersistEvent::ViewLoaded {
-            view: load_view(&backend),
-            backend,
+        PersistCmd::LoadView { key } => Some(PersistEvent::ViewLoaded {
+            view: load_view(&key),
+            key,
         }),
-        PersistCmd::SaveView { backend, view } => match save_view(&backend, &view) {
+        PersistCmd::SaveView { key, view } => match save_view(&key, &view) {
             Ok(()) => None,
             Err(err) => Some(PersistEvent::SaveFailed {
                 op: "save_view",
                 err,
             }),
         },
-        PersistCmd::ClearView { backend } => {
-            clear_view(&backend);
+        PersistCmd::ClearView { key } => {
+            clear_view(&key);
             None
         }
         PersistCmd::LoadSearchHistory { backend } => Some(PersistEvent::SearchHistoryLoaded {
@@ -236,24 +243,47 @@ fn save_last_server(name: &str) -> Result<(), String> {
 
 // ─── last_view ──────────────────────────────────────────────────────
 
-fn load_view(backend: &str) -> Option<mkpclient_driver_persist_core::SavedView> {
-    let p = backend_dir(backend)?.join("last_view");
+fn view_path(key: &ViewKey) -> Option<PathBuf> {
+    Some(
+        backend_dir(&key.server)?
+            .join(sanitise(&key.backend))
+            .join("last_view"),
+    )
+}
+
+/// Where releases up to 1.0.0 kept the view: one per server, with no
+/// music-backend dimension.
+fn legacy_view_path(key: &ViewKey) -> Option<PathBuf> {
+    Some(backend_dir(&key.server)?.join("last_view"))
+}
+
+fn read_view(p: PathBuf) -> Option<mkpclient_driver_persist_core::SavedView> {
     let text = std::fs::read_to_string(p).ok()?;
     toml::from_str(&text).ok()
 }
 
-fn save_view(backend: &str, view: &mkpclient_driver_persist_core::SavedView) -> Result<(), String> {
-    let Some(p) = backend_dir(backend) else {
+fn load_view(key: &ViewKey) -> Option<mkpclient_driver_persist_core::SavedView> {
+    // Fall back to the pre-1.0.1 server-only file so an upgrade
+    // resumes where the user left off instead of on a blank pane.
+    // The first save writes to the new path; the legacy file is left
+    // alone, since another backend on the same server may still be
+    // the one it was written for.
+    view_path(key)
+        .and_then(read_view)
+        .or_else(|| legacy_view_path(key).and_then(read_view))
+}
+
+fn save_view(key: &ViewKey, view: &mkpclient_driver_persist_core::SavedView) -> Result<(), String> {
+    let Some(p) = view_path(key) else {
         return Err("no config dir".into());
     };
-    let p = p.join("last_view");
     let text = toml::to_string(view).map_err(|e| e.to_string())?;
     atomic_write(&p, text.as_bytes()).map_err(|e| e.to_string())
 }
 
-fn clear_view(backend: &str) {
-    if let Some(p) = backend_dir(backend) {
-        let _ = std::fs::remove_file(p.join("last_view"));
+fn clear_view(key: &ViewKey) {
+    if let Some(p) = view_path(key) {
+        let _ = std::fs::remove_file(p);
     }
 }
 
@@ -335,5 +365,105 @@ mod keybinding_tests {
             vec![KeyChord::char('p')]
         );
         assert!(std::fs::read_to_string(path).unwrap().contains("move_up"));
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use mkpclient_driver_persist_core::SavedView;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// `config_dir` reads process-global env, so tests pointing it at
+    /// a tempdir have to take turns.
+    fn config_root(dir: &std::path::Path) -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("MKP_CONFIG_HOME", dir);
+        guard
+    }
+
+    fn view(playlist_id: &str) -> SavedView {
+        SavedView::Playlist {
+            playlist_id: playlist_id.into(),
+            selected: 0,
+            offset: 0,
+            selected_id: String::new(),
+        }
+    }
+
+    fn playlist_id_of(v: &SavedView) -> &str {
+        match v {
+            SavedView::Playlist { playlist_id, .. } => playlist_id,
+            other => panic!("expected a playlist view, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn views_of_two_backends_on_one_server_do_not_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = config_root(tmp.path());
+
+        let mk = ViewKey::new("living-room", "musickit");
+        let tidal = ViewKey::new("living-room", "tidal");
+        save_view(&mk, &view("mk-playlist")).unwrap();
+        save_view(&tidal, &view("tidal-playlist")).unwrap();
+
+        assert_eq!(playlist_id_of(&load_view(&mk).unwrap()), "mk-playlist");
+        assert_eq!(
+            playlist_id_of(&load_view(&tidal).unwrap()),
+            "tidal-playlist"
+        );
+        assert!(tmp
+            .path()
+            .join("living-room")
+            .join("musickit")
+            .join("last_view")
+            .exists());
+    }
+
+    #[test]
+    fn a_1_0_0_view_is_read_until_the_backend_has_one_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = config_root(tmp.path());
+
+        // What 1.0.0 wrote: one view per server, no backend segment.
+        let legacy = tmp.path().join("study").join("last_view");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, toml::to_string(&view("from-1-0-0")).unwrap()).unwrap();
+
+        let key = ViewKey::new("study", "musickit");
+        assert_eq!(
+            playlist_id_of(&load_view(&key).unwrap()),
+            "from-1-0-0",
+            "upgrading must not drop the view the user left behind"
+        );
+
+        // Once this backend has saved its own, that wins — and the
+        // legacy file stays put for whichever backend it belonged to.
+        save_view(&key, &view("current")).unwrap();
+        assert_eq!(playlist_id_of(&load_view(&key).unwrap()), "current");
+        assert!(legacy.exists());
+    }
+
+    #[test]
+    fn clearing_a_view_leaves_the_other_backend_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = config_root(tmp.path());
+
+        let mk = ViewKey::new("den", "musickit");
+        let tidal = ViewKey::new("den", "tidal");
+        save_view(&mk, &view("mk-playlist")).unwrap();
+        save_view(&tidal, &view("tidal-playlist")).unwrap();
+
+        clear_view(&mk);
+        assert!(load_view(&mk).is_none());
+        assert_eq!(
+            playlist_id_of(&load_view(&tidal).unwrap()),
+            "tidal-playlist"
+        );
     }
 }

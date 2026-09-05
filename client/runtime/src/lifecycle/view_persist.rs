@@ -180,7 +180,7 @@ pub fn apply_view_persist(sources: &mut Sources, drivers: &Drivers) {
     let Some(view) = crate::dispatch::build_saved_view(sources) else {
         return;
     };
-    let Some(backend) = sources.session.backend_name.as_ref().map(|s| s.to_string()) else {
+    let Some(key) = crate::dispatch::current_view_key(sources) else {
         return;
     };
     // Sync intent: write the key before firing so the next tick's
@@ -188,5 +188,5 @@ pub fn apply_view_persist(sources: &mut Sources, drivers: &Drivers) {
     sources.persist.last_view_saved_key = Some(view.key());
     drivers
         .persist
-        .execute([&PersistCmd::SaveView { backend, view }]);
+        .execute([&PersistCmd::SaveView { key, view }]);
 }

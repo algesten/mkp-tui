@@ -15,9 +15,12 @@ use std::sync::Arc;
 
 use imbl::{HashSet as ImHashSet, Vector};
 
-use mkpclient_driver_persist_core::{LoadKey, Persist, PersistCmd, SavedView, ViewLoadResult};
+use mkpclient_driver_persist_core::{
+    LoadKey, Persist, PersistCmd, SavedView, ViewKey, ViewLoadResult,
+};
 use mkpclient_state_link::{Link, LinkPhase};
 use mkpclient_state_playlists::Playlists;
+use mkpclient_state_server_state::ServerState;
 use mkpclient_state_ui_session::UiSession;
 use mkproto::Playlist;
 
@@ -38,6 +41,22 @@ impl<'a> RestoreSessionInput<'a> {
         Self {
             auto_restored_view: s.auto_restored_view,
             backend_name: s.backend_name.as_ref(),
+        }
+    }
+}
+
+/// The music backend the connected server reported. Half of the
+/// `ViewKey` — a view saved while the server was on MusicKit must
+/// not be applied once it has swapped to Tidal.
+#[derive(drv::Input)]
+pub struct RestoreBackendInput<'a> {
+    pub backend: Option<&'a std::sync::Arc<str>>,
+}
+
+impl<'a> RestoreBackendInput<'a> {
+    pub fn new(s: &'a ServerState) -> Self {
+        Self {
+            backend: s.backend.as_ref(),
         }
     }
 }
@@ -91,14 +110,14 @@ impl<'a> RestorePersistInput<'a> {
 pub enum DesiredRestore {
     /// Conditions not met yet (or already restored): do nothing.
     Idle,
-    /// Issue a `LoadView` for `backend`.
-    Load { backend: String },
+    /// Issue a `LoadView` for `key`.
+    Load { key: ViewKey },
     /// The persist worker came back with a saved view to apply.
-    Apply { backend: String, view: SavedView },
+    Apply { key: ViewKey, view: SavedView },
     /// No saved view on disk; open the first playlist (or do nothing
     /// if there are no playlists at all).
     OpenFirst {
-        backend: String,
+        key: ViewKey,
         first_playlist_id: Option<String>,
     },
 }
@@ -107,24 +126,25 @@ pub enum DesiredRestore {
 pub enum RestoreAction {
     Noop,
     Load {
-        backend: String,
+        key: ViewKey,
     },
     Apply {
-        backend: String,
+        key: ViewKey,
         view: SavedView,
     },
     OpenFirst {
-        backend: String,
+        key: ViewKey,
         first_playlist_id: Option<String>,
     },
 }
 
 #[drv::memo(single)]
-pub fn desired_restore<'a, 'b, 'c>(
+pub fn desired_restore<'a, 'b, 'c, 'd>(
     session: RestoreSessionInput<'a>,
     link: RestoreLinkInput,
     playlists: RestorePlaylistsInput<'b>,
     persist: RestorePersistInput<'c>,
+    server: RestoreBackendInput<'d>,
 ) -> DesiredRestore {
     if session.auto_restored_view {
         return DesiredRestore::Idle;
@@ -132,27 +152,29 @@ pub fn desired_restore<'a, 'b, 'c>(
     if !link.connected || !playlists.loaded {
         return DesiredRestore::Idle;
     }
-    let Some(backend) = session.backend_name else {
+    let Some(server_name) = session.backend_name else {
         return DesiredRestore::Idle;
     };
-    // Has the worker already replied for this backend?
+    // The handshake reports the backend before playlists can load,
+    // so this is set by the time we get here — but stay Idle rather
+    // than restore under half a key if it somehow isn't.
+    let Some(backend) = server.backend else {
+        return DesiredRestore::Idle;
+    };
+    let key = ViewKey::new(server_name.to_string(), backend.to_string());
+    // Has the worker already replied for this key?
     if let Some(load) = persist.last_view_load {
-        if load.backend.as_str() == &**backend {
+        if load.key == key {
             return match load.view.clone() {
-                Some(view) => DesiredRestore::Apply {
-                    backend: backend.to_string(),
-                    view,
-                },
+                Some(view) => DesiredRestore::Apply { key, view },
                 None => DesiredRestore::OpenFirst {
-                    backend: backend.to_string(),
+                    key,
                     first_playlist_id: playlists.items.iter().next().map(|p| p.id.clone()),
                 },
             };
         }
     }
-    DesiredRestore::Load {
-        backend: backend.to_string(),
-    }
+    DesiredRestore::Load { key }
 }
 
 #[drv::memo(single)]
@@ -162,26 +184,26 @@ pub fn restore_action<'a>(
 ) -> RestoreAction {
     match desired {
         DesiredRestore::Idle => RestoreAction::Noop,
-        DesiredRestore::Load { backend } => {
+        DesiredRestore::Load { key } => {
             // Dedup: a previous tick may already have issued the
             // load. The trampoline also re-checks before sending, but
             // returning Noop here keeps the action memo's diff
             // discipline ("same action twice in a row is wasted").
             if persist
                 .loads_in_flight
-                .contains(&LoadKey::View(backend.clone()))
+                .contains(&LoadKey::View(key.clone()))
             {
                 RestoreAction::Noop
             } else {
-                RestoreAction::Load { backend }
+                RestoreAction::Load { key }
             }
         }
-        DesiredRestore::Apply { backend, view } => RestoreAction::Apply { backend, view },
+        DesiredRestore::Apply { key, view } => RestoreAction::Apply { key, view },
         DesiredRestore::OpenFirst {
-            backend,
+            key,
             first_playlist_id,
         } => RestoreAction::OpenFirst {
-            backend,
+            key,
             first_playlist_id,
         },
     }
@@ -195,20 +217,21 @@ pub fn apply_restore(sources: &mut Sources, drivers: &Drivers) {
         RestoreLinkInput::new(&sources.link),
         RestorePlaylistsInput::new(&sources.playlists),
         RestorePersistInput::new(&sources.persist),
+        RestoreBackendInput::new(&sources.server),
     );
     let action = restore_action(desired, RestorePersistInput::new(&sources.persist));
     match action {
         RestoreAction::Noop => {}
-        RestoreAction::Load { backend } => {
+        RestoreAction::Load { key } => {
             // Sync intent: insert the LoadKey before firing so the
             // dedup gate flips the next tick to Noop.
             sources
                 .persist
                 .loads_in_flight
-                .insert(LoadKey::View(backend.clone()));
-            drivers.persist.execute([&PersistCmd::LoadView { backend }]);
+                .insert(LoadKey::View(key.clone()));
+            drivers.persist.execute([&PersistCmd::LoadView { key }]);
         }
-        RestoreAction::Apply { backend: _, view } => {
+        RestoreAction::Apply { key: _, view } => {
             // Sync intent: flip the guard before applying so the
             // next tick is Idle. The view-persist lifecycle will
             // re-write the just-applied view to disk on the next
@@ -219,7 +242,7 @@ pub fn apply_restore(sources: &mut Sources, drivers: &Drivers) {
             dispatch::apply_saved_view(sources, view);
         }
         RestoreAction::OpenFirst {
-            backend: _,
+            key: _,
             first_playlist_id,
         } => {
             sources.session.auto_restored_view = true;
