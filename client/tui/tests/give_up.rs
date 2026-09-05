@@ -20,7 +20,10 @@ use std::time::Duration;
 use mkpclient_runtime::{views, ClientMsg, Runtime, TuiCursorEvent};
 use mkpclient_state_link::LinkPhase;
 use mkpclient_state_ui_screen::Screen;
+use mkpclient_tui::app::AppState;
 use mkproto::{Playlist, ServerMsg};
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 
 use common::certs;
 use common::harness::Harness;
@@ -116,6 +119,44 @@ fn giving_up_hands_back_the_picker() {
         matches!(model, views::PreConnectModel::ServerList { .. }),
         "giving up on {lost} left the pre-connect screen showing progress \
          with no way back to the picker: {model:?}"
+    );
+}
+
+/// The same claim as `giving_up_hands_back_the_picker`, but taken off
+/// the real painted frame instead of the model — `render::draw` is
+/// what decides which surface takes the screen, and this is the
+/// assertion that survives that decision moving.
+#[test]
+fn giving_up_paints_the_server_list() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let mut harness = harness_after_a_drop();
+    // `Harness::publish` labels the ad `host-<port>`, and the
+    // pre-connect list draws one row per discovered server labelled
+    // by `host`. Nothing else on the screen carries that string.
+    let row = format!("host-{}", harness.mock.addr.port());
+
+    harness.dispatch(TuiCursorEvent::ServerLostGiveUp);
+
+    let app = AppState::default();
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).expect("terminal");
+    terminal
+        .draw(|frame| mkpclient_tui::render::draw(frame, &app, &harness.rt))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let mut screen = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            screen.push_str(buf[(x, y)].symbol());
+        }
+        screen.push('\n');
+    }
+
+    assert!(
+        screen.contains(&row),
+        "after giving up, the screen shows no server to pick.\n\
+         pre_connect_model = {:?}\n{screen}",
+        pre_connect(&harness.rt)
     );
 }
 
