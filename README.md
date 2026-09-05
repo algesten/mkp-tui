@@ -46,10 +46,8 @@ same network — it discovers one over mDNS and pairs with it.
 **Homebrew** (macOS and Linux):
 
 ```bash
-brew install algesten/make-play/make-play
+brew install algesten/make-play/mkp
 ```
-
-The command it installs is `mkp`.
 
 The fully qualified name matters. Homebrew does not load formulae from
 third-party taps until they are trusted, and installing by full name
@@ -59,7 +57,7 @@ longer route below is equivalent but grants trust to the whole tap:
 ```bash
 brew tap algesten/make-play
 brew trust algesten/make-play
-brew install make-play
+brew install mkp
 ```
 
 Homebrew predating tap trust has no `trust` command and answers
