@@ -861,6 +861,7 @@ fn reject_pair(sources: &mut Sources, drivers: &Drivers) {
 
 fn disconnect(sources: &mut Sources, drivers: &Drivers) {
     sources.intent.target = None;
+    sources.intent.pair_target = None;
     // Disarm here, not in the lifecycle: `apply_connect` runs before
     // `apply_backend` in a tick, so a still-armed `auto_connect` would
     // rewrite the intent just cleared — from `preferred_server`, which
@@ -868,6 +869,13 @@ fn disconnect(sources: &mut Sources, drivers: &Drivers) {
     // branch leaves `auto_connect` armed on purpose so a failing
     // reconnect keeps retrying, and this is where the user says stop.
     sources.session.auto_connect = false;
+    // And `lost_server` with it. It is what `desired_lost_modal` reads,
+    // and a disconnect issued *during* a reconnect would otherwise
+    // leave the two queries permanently disagreeing: the modal shown
+    // because a server is lost, and nothing dialling because
+    // auto-connect is off. That paints "reconnecting…" over a runtime
+    // that never will.
+    sources.session.lost_server = None;
     if matches!(
         sources.link.phase,
         LinkPhase::Connected | LinkPhase::Connecting

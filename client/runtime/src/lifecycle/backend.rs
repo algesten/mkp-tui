@@ -1,6 +1,16 @@
 //! Step 2 of the lifecycle: keep `session.backend_name` in sync with
 //! the link's connected/closed state, persist the new "last server"
-//! on connect, save the current view + flag lost-server on close.
+//! on connect, and on close decide whether the server was *lost* —
+//! which arms the reconnect — or merely left.
+//!
+//! That decision rests on an ordering the runtime does not otherwise
+//! state: the close tick must not also dial. Ingest arms the backoff
+//! when the close event lands, and execute runs after ingest, so
+//! `apply_link` holds. If that ever stopped holding, `desired_backend`
+//! would answer `Unknown` on the drop tick, `backend_name` would never
+//! clear, the reconnect's `Set` would collapse to a `Noop` against the
+//! same name, and `auto_restored_view` would never reset — a silent
+//! reconnect onto empty panes with no modal at all.
 //!
 //! Spec §6: `desired_backend()` answers "what should `backend_name`
 //! be given link + probes + discovery?"; `backend_action()` diffs
@@ -70,20 +80,25 @@ impl<'a> ProbesByAddrInput<'a> {
     }
 }
 
-/// Does anything still name a server to be on? `intent` is what
-/// `apply_link` dials from, so an empty intent is the runtime's own
-/// record that the close was asked for rather than suffered.
+/// Which server the runtime still means to be on, if any. `intent` is
+/// what `apply_link` dials from, so comparing it against the backend
+/// that just went away is how a loss is told from a departure: a
+/// deliberate switch has already re-pointed it at the *new* server,
+/// and a deliberate disconnect has emptied it.
+///
+/// `pair_target` is deliberately not projected. A pairing link's
+/// `link.target` is an mDNS name rather than a fingerprint, so
+/// `desired_backend` can never name one — reading it here would only
+/// invalidate this memo on pairing churn that cannot affect the answer.
 #[derive(drv::Input)]
 pub struct BackendIntentInput<'a> {
     pub target: Option<&'a std::sync::Arc<str>>,
-    pub pair_target: Option<&'a std::sync::Arc<str>>,
 }
 
 impl<'a> BackendIntentInput<'a> {
     pub fn new(i: &'a Intent) -> Self {
         Self {
             target: i.target.as_ref(),
-            pair_target: i.pair_target.as_ref(),
         }
     }
 }
