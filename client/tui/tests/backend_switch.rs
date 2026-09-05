@@ -16,7 +16,7 @@ use common::mock_server;
 use common::mock_server::{MockServer, ScriptStep};
 use mkpclient_runtime::{SemanticEvent, TuiCursorEvent};
 use mkpclient_state_ui_history::MiddleMode;
-use mkproto::{ClientMsg, Playlist, ServerMsg};
+use mkproto::{ClientMsg, PlayState, PlaybackState, Playlist, ServerMsg, Song};
 
 fn playlist(id: &str, track_count: usize) -> Playlist {
     Playlist {
@@ -223,5 +223,93 @@ fn switching_backend_drops_optimistic_playlist_mutations() {
         "an optimistic mutation aimed at the previous backend must not \
          survive the swap — its reply never comes, so it renders and \
          spins forever"
+    );
+}
+
+/// `LinkEvent::Closed` replaces the whole `ServerState` with
+/// `Default::default()` (`client/runtime/src/ingest.rs`), so a close
+/// drops `server.play` along with `server.backend`. The swap
+/// trampoline states the same rule — "A swap is a reconnect that
+/// skipped the socket, so it drops what a close drops"
+/// (`client/runtime/src/lifecycle/backend_session.rs`) — but
+/// `reset_server_derived_state` deliberately leaves `sources.server`
+/// alone in order to protect the ingest-owned `backend` fact, and
+/// takes `play` with it.
+///
+/// The result is that the now-playing bar keeps rendering (and
+/// animating the progress of) a track out of the catalogue the
+/// server has just stopped playing from, for as long as it takes the
+/// new backend to report a play state — which, if the new backend
+/// never answers `GetState`, is forever.
+#[test]
+fn switching_backend_drops_the_previous_backends_play_state() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let backend = std::sync::Mutex::new("musickit".to_string());
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            let current = backend.lock().unwrap().clone();
+            match msg {
+                ClientMsg::Hello { .. } => mock_server::hello_reply_from(&current),
+                // Only the outgoing backend reports a play state; the
+                // incoming one is still starting up and answers
+                // nothing, which is what makes the staleness visible.
+                ClientMsg::GetState if current == "musickit" => {
+                    vec![ScriptStep::Reply(ServerMsg::StateUpdate(PlayState {
+                        playback: PlaybackState::Playing,
+                        now_playing: Some(Song {
+                            id: "mk-song".into(),
+                            title: "Only On MusicKit".into(),
+                            artist_name: "a".into(),
+                            album_title: "b".into(),
+                            duration: 1.0,
+                            track_number: None,
+                            url: None,
+                            artwork_url_small: None,
+                            artwork_url_large: None,
+                        }),
+                        position: 0.0,
+                        position_at: 0.0,
+                        queue_index: None,
+                        repeat: Default::default(),
+                    }))]
+                }
+                ClientMsg::GetPlaylists => vec![ScriptStep::Reply(ServerMsg::Playlists {
+                    playlists: playlists_for(&current),
+                })],
+                ClientMsg::Ping => {
+                    *backend.lock().unwrap() = "tidal".to_string();
+                    vec![ScriptStep::Broadcast(ServerMsg::BackendChanged {
+                        backend: "tidal".into(),
+                    })]
+                }
+                _ => vec![],
+            }
+        }),
+    );
+
+    let mut h = Harness::connect(mock);
+    h.tick_until(
+        |rt| rt.sources.server.play.is_some(),
+        Duration::from_secs(3),
+    )
+    .expect("the outgoing backend's play state to land");
+
+    h.dispatch(SemanticEvent::SendRequest {
+        msg: ClientMsg::Ping,
+        task_id: None,
+    });
+    h.tick_until(
+        |rt| rt.sources.playlists.items.iter().any(|p| p.id == "tidal-1"),
+        Duration::from_secs(3),
+    )
+    .expect("the new backend's catalogue to land, i.e. the swap is complete");
+
+    assert_eq!(
+        h.rt.sources.server.play, None,
+        "a play state belonging to the outgoing backend must not survive \
+         the swap — a close drops it, and a swap is a close that skipped \
+         the socket"
     );
 }
