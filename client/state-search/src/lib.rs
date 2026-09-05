@@ -26,6 +26,11 @@ pub struct Search {
     /// First-page reply has been observed. Until then the UI shows
     /// a "searching…" spinner.
     pub first_page_received: bool,
+    /// The request this search is waiting on died with the connection.
+    /// Set on close while a first page was still outstanding; the
+    /// refetch lifecycle re-issues the search once the link is back.
+    /// Cleared by `begin` and by the re-issue.
+    pub stale: bool,
     /// Server reported it has streamed everything for this task.
     pub completed: bool,
     /// One-shot gate for the legacy "reopen the search modal when
@@ -40,6 +45,7 @@ pub struct Search {
 impl Search {
     /// Begin a new search. Clears any prior accumulated results.
     pub fn begin(&mut self, task_id: TaskId, term: Arc<str>, search_type: SearchType) {
+        self.stale = false;
         *self = Self {
             task_id: Some(task_id),
             term,

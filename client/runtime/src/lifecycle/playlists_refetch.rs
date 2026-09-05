@@ -218,3 +218,78 @@ mod tests {
         assert_eq!(action, PlaylistTracksRefetchAction::Noop);
     }
 }
+
+// ─── search ─────────────────────────────────────────────────────────
+//
+// A search interrupted by a dropped link has the same shape as an
+// interrupted track list: rows may already be on screen, but the reply
+// that would have completed it is gone. Unlike the track list, the
+// search pane's spinner reads `first_page_received` rather than the
+// task handle, so simply forgetting the handle leaves it reading
+// "Searching…" for the life of the process.
+
+#[derive(drv::Input)]
+pub struct SearchRefetchInput<'a> {
+    pub stale: bool,
+    pub term: &'a std::sync::Arc<str>,
+    /// Mirror of `mkproto::SearchType` — mkproto stays drv-free, so
+    /// the projection round-trips through the local enum, as
+    /// `search_reopen` does.
+    pub search_type: crate::views::SearchKind,
+    pub pending_task: Option<TaskId>,
+}
+
+impl<'a> SearchRefetchInput<'a> {
+    pub fn new(s: &'a mkpclient_state_search::Search) -> Self {
+        Self {
+            stale: s.stale,
+            term: &s.term,
+            search_type: s.search_type.into(),
+            pending_task: s.task_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchRefetchAction {
+    Noop,
+    Fire {
+        term: String,
+        search_type: crate::views::SearchKind,
+    },
+}
+
+#[drv::memo(single)]
+pub fn search_refetch_action<'a>(input: SearchRefetchInput<'a>) -> SearchRefetchAction {
+    if !input.stale || input.pending_task.is_some() {
+        return SearchRefetchAction::Noop;
+    }
+    if input.term.is_empty() {
+        return SearchRefetchAction::Noop;
+    }
+    SearchRefetchAction::Fire {
+        term: input.term.to_string(),
+        search_type: input.search_type,
+    }
+}
+
+pub fn apply_search_refetch(sources: &mut Sources) {
+    let action = search_refetch_action(SearchRefetchInput::new(&sources.search));
+    let SearchRefetchAction::Fire { term, search_type } = action else {
+        return;
+    };
+    let search_type: mkproto::SearchType = search_type.into();
+    let task_id = sources.requests.alloc_task_id();
+    sources
+        .search
+        .begin(task_id, std::sync::Arc::from(term.as_str()), search_type);
+    sources
+        .requests
+        .push(ClientMsg::Search { term, search_type }, Some(task_id));
+    if let mkpclient_state_ui_history::MiddleMode::SearchResults {
+        task_id: mode_task, ..
+    } = &mut sources.history.mode
+    {
+        *mode_task = Some(task_id);
+    }
+}

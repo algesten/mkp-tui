@@ -182,9 +182,28 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 // a spinner) and `playlists.pending_request` /
                 // `search.task_id` do the same for theirs. The rows
                 // they describe stay on screen; only the waiting stops.
-                sources.playlist_tracks.pending_task = None;
                 sources.playlists.pending_request = None;
                 sources.playlists.pending_task = None;
+
+                // A stream cut off mid-flight needs more than its
+                // handle dropped: the rows it had already delivered
+                // stay, but something has to either re-issue it or
+                // stop it claiming to be loading, or the pane spins
+                // for the life of the process.
+                //
+                // Track lists have a refetch lifecycle, so mark them
+                // stale and let it re-issue. Clearing `pending_task`
+                // alone would make `is_ready()` true over a half-filled
+                // list, leaving un-arrived rows as permanent
+                // placeholders that nothing would ever fill.
+                if sources.playlist_tracks.pending_task.is_some() {
+                    sources.playlist_tracks.stale = true;
+                }
+                sources.playlist_tracks.pending_task = None;
+
+                if sources.search.task_id.is_some() {
+                    sources.search.stale = true;
+                }
                 sources.search.task_id = None;
 
                 // The queue is the one part of the view that cannot be
@@ -203,7 +222,9 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 // Leaving the phase set would strand every later
                 // pairing attempt behind a session that can never
                 // complete.
-                if matches!(sources.link.kind, Some(StateLinkKind::Pairing)) {
+                if matches!(sources.link.kind, Some(StateLinkKind::Pairing))
+                    && sources.pairing.phase != PairingPhase::Idle
+                {
                     sources.pairing = Default::default();
                     sources.intent.pair_target = None;
                 }

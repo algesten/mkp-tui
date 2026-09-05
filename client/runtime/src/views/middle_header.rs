@@ -28,6 +28,16 @@ pub enum SearchKind {
     Artist,
 }
 
+impl From<SearchKind> for SearchType {
+    fn from(s: SearchKind) -> Self {
+        match s {
+            SearchKind::Song => SearchType::Song,
+            SearchKind::Album => SearchType::Album,
+            SearchKind::Artist => SearchType::Artist,
+        }
+    }
+}
+
 impl From<SearchType> for SearchKind {
     fn from(s: SearchType) -> Self {
         match s {

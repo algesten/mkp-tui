@@ -316,6 +316,7 @@ pub fn run(sources: &mut Sources, drivers: &Drivers) {
     crate::lifecycle::restore::apply_restore(sources, drivers);
     crate::lifecycle::playlists_refetch::apply_playlists_refetch(sources);
     crate::lifecycle::playlists_refetch::apply_playlist_tracks_refetch(sources);
+    crate::lifecycle::playlists_refetch::apply_search_refetch(sources);
     // Runs after restore so the just-applied `history.mode` gets
     // mirrored to disk on the same tick.
     crate::lifecycle::view_persist::apply_view_persist(sources, drivers);

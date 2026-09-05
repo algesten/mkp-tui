@@ -250,11 +250,18 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
             // Sync intent writes first.
             sources.session.backend_name = Some(Arc::from(name.as_str()));
             sources.session.lost_server = None;
-            // Force restore to re-run for the (possibly different)
-            // backend, and drop the previous backend's saved-key so
-            // view-persist doesn't accidentally write stale `mode`
-            // state to the new backend before restore overwrites it.
-            sources.session.auto_restored_view = false;
+            // Re-run the startup restore only for a *different*
+            // backend. On a reconnect the view is already the one the
+            // user was looking at, and restoring would clear the
+            // retained track list to re-stream it and snap the cursor
+            // to the on-disk `selected` — which `view_persist` writes
+            // only on a mode change, so it is stale by design.
+            if drop_retained {
+                sources.session.auto_restored_view = false;
+            }
+            // Drop the previous backend's saved-key so view-persist
+            // doesn't accidentally write stale `mode` state to the new
+            // backend before restore overwrites it.
             sources.persist.last_view_saved_key = None;
             sources.persist.last_add_playlist_saved = None;
             sources.persist.last_pushed_search_task = None;
@@ -291,7 +298,12 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
                 sources.artist_extras.clear();
             }
             sources.session.backend_name = None;
-            sources.session.auto_restored_view = false;
+            // A loss keeps the view, so the restore must not re-run on
+            // the way back up. A deliberate close wiped it above, and
+            // a fresh restore is then correct.
+            if !lost {
+                sources.session.auto_restored_view = false;
+            }
             sources.persist.last_view_saved_key = None;
             sources.persist.last_add_playlist_saved = None;
             sources.persist.last_pushed_search_task = None;
