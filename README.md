@@ -47,9 +47,10 @@ same network — it discovers one over mDNS and pairs with it.
 
 ```bash
 brew tap algesten/make-play
-brew install --cask make-play   # the server app, with mkp bundled
-brew install mkp                # just the terminal client
+brew install make-play
 ```
+
+The command it installs is `mkp`.
 
 **Nix**:
 
