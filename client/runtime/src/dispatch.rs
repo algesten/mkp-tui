@@ -819,6 +819,11 @@ fn dispatch_cursor(ev: TuiCursorEvent, sources: &mut Sources, drivers: &Drivers)
 // ─── Connection ─────────────────────────────────────────────────────
 
 fn connect_to(sources: &mut Sources, server_name: String) {
+    // A pairing session belongs to the connection that carried it. If
+    // one is still recorded from a handshake that dropped, it describes
+    // nothing — and leaving it would make the runtime treat this fresh,
+    // user-asked-for attempt as the dead one still being in flight.
+    sources.pairing = Default::default();
     sources.intent.target = Some(Arc::from(server_name));
     sources.intent.pair_target = None;
     clear_last_error(&mut sources.link);
@@ -829,6 +834,7 @@ fn connect_to(sources: &mut Sources, server_name: String) {
 }
 
 fn begin_pair(sources: &mut Sources, server_name: String) {
+    sources.pairing = Default::default();
     sources.intent.pair_target = Some(Arc::from(server_name));
     clear_last_error(&mut sources.link);
     sources.link.clear_retry();

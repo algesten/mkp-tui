@@ -93,26 +93,6 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                         // `ErrorModal` lifecycle sees it.
                         sources.playlists.pending_request = Some(seq);
                         sources.playlists.pending_task = Some(task_id);
-
-                        // The queue survives a drop with its rows *and*
-                        // its `(queue_id, version)` cursor, but the
-                        // server only re-sends the queue when it
-                        // changes — so anything that happened during
-                        // the outage is simply missing, and the next
-                        // `QueueDelta` would be applied by index to a
-                        // list that had moved on. Ask for the gap. A
-                        // queue that was replaced wholesale comes back
-                        // under a new `queue_id`, which resets it.
-                        if let Some(queue_id) = sources.queue.queue_id {
-                            sources.requests.push(
-                                ClientMsg::GetQueueSince {
-                                    queue_id,
-                                    version: sources.queue.version,
-                                    focus: sources.queue.current_index.unwrap_or(0),
-                                },
-                                None,
-                            );
-                        }
                     }
                 }
             }
@@ -175,7 +155,6 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 maybe_persist_confirmed_pairing(sources, drivers);
 
                 sources.link.phase = LinkPhase::Closed;
-                sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
 
                 // Rate-limit whatever dials next. The desired-state
@@ -207,6 +186,28 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.playlists.pending_request = None;
                 sources.playlists.pending_task = None;
                 sources.search.task_id = None;
+
+                // The queue is the one part of the view that cannot be
+                // retained. `send_queue_chunked` answers the handshake
+                // with the server's *stale* base snapshot plus its
+                // whole delta log — deliberately, see the contract at
+                // `server/src/state.rs` — and that composes correctly
+                // only onto an empty mirror. Kept rows would have the
+                // log applied twice. `Queue::reset` would not save us:
+                // it fires on a changed `queue_id`, which a same-server
+                // reconnect does not have.
+                sources.queue = Default::default();
+
+                // A pairing handshake dies with its socket: the
+                // verification code is derived from that TLS session.
+                // Leaving the phase set would strand every later
+                // pairing attempt behind a session that can never
+                // complete.
+                if matches!(sources.link.kind, Some(StateLinkKind::Pairing)) {
+                    sources.pairing = Default::default();
+                    sources.intent.pair_target = None;
+                }
+                sources.link.kind = None;
                 sources.activity.clear();
 
                 // The *rendered* state deliberately survives. A drop is
