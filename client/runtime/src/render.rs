@@ -272,6 +272,7 @@ fn push_pre_connect(sources: &Sources, driver: &UiBridgeDriver, state: &mut UiBr
         sources.session.lost_server.as_deref(),
         sources.session.auto_connect,
         server_picker_selected,
+        sources.intent.target.as_deref(),
     );
     push(ViewKind::PreConnect, &model, driver, state);
 }

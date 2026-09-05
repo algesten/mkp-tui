@@ -727,6 +727,7 @@ fn draw_pre_connect(frame: &mut Frame, area: Rect, app: &AppState, rt: &Runtime)
         rt.sources.session.lost_server.as_deref(),
         rt.sources.session.auto_connect,
         rt.sources.cursor.server_picker,
+        rt.sources.intent.target.as_deref(),
     );
     pre_connect::draw(frame, area, &model, spinner(app.tick));
 }

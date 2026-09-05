@@ -39,6 +39,12 @@ pub enum PreConnectModel {
 pub struct PreConnectInput<'a> {
     pub servers: &'a Vector<ServerAd>,
     pub link_connecting: bool,
+    /// Did the last close carry an error? A clean teardown (the user
+    /// switching servers) leaves it unset; a refused or dropped
+    /// connection sets it and it stays set until the next successful
+    /// connect. It is what stops an unreachable target from pinning
+    /// the screen to "connecting…" with no way back to the picker.
+    pub link_failed: bool,
     pub probes: &'a ImHashMap<String, ProbeOutcome>,
     pub creds: &'a ImHashMap<String, PairingEntry>,
 }
@@ -53,6 +59,7 @@ impl<'a> PreConnectInput<'a> {
         Self {
             servers: &discovery.servers,
             link_connecting: link.phase == LinkPhase::Connecting,
+            link_failed: link.last_err.is_some(),
             probes: &probes.by_addr,
             creds: &creds.entries,
         }
@@ -66,6 +73,7 @@ pub fn pre_connect_model<'a>(
     lost_server: Option<&str>,
     auto_connect: bool,
     server_picker_selected: usize,
+    connect_target: Option<&str>,
 ) -> PreConnectModel {
     // Are we still waiting for a named server to appear in mDNS?
     let waiting_for_preferred = match preferred_server {
@@ -73,8 +81,29 @@ pub fn pre_connect_model<'a>(
         None => false,
     };
 
-    if sources.servers.is_empty() || waiting_for_preferred || sources.link_connecting {
-        let kind = match lost_server.or(preferred_server) {
+    // A connect the runtime can still make progress on: `intent.target`
+    // names a server mDNS can see, nothing has failed yet, and the
+    // link is between attempts rather than mid-handshake. Switching
+    // servers spends several ticks here — tearing the old link down,
+    // probing the new one — and showing the picker through that window
+    // asks the user to choose a server they have already chosen.
+    let dialling = connect_target.filter(|name| {
+        !sources.link_failed
+            && sources.servers.iter().any(|s| {
+                s.name == *name
+                    && !matches!(
+                        sources.probes.get(&format!("{}:{}", s.addr, s.port)),
+                        Some(ProbeOutcome::Failed(_))
+                    )
+            })
+    });
+
+    if sources.servers.is_empty()
+        || waiting_for_preferred
+        || sources.link_connecting
+        || dialling.is_some()
+    {
+        let kind = match lost_server.or(preferred_server).or(dialling) {
             Some(name) => ConnectingKind::ToServer {
                 name: name.to_string(),
             },
@@ -130,6 +159,7 @@ mod tests {
         lost: Option<&'a str>,
         auto: bool,
         sel: usize,
+        target: Option<&'a str>,
     }
 
     fn run(args: RunArgs<'_>) -> PreConnectModel {
@@ -139,6 +169,7 @@ mod tests {
             args.lost,
             args.auto,
             args.sel,
+            args.target,
         )
     }
 
@@ -163,6 +194,7 @@ mod tests {
             lost: None,
             auto: true,
             sel: 0,
+            target: None,
         });
         assert_eq!(m, PreConnectModel::Status(ConnectingKind::Discovering));
     }
@@ -179,6 +211,7 @@ mod tests {
             lost: None,
             auto: true,
             sel: 0,
+            target: None,
         });
         assert_eq!(
             m,
@@ -204,6 +237,7 @@ mod tests {
             lost: None,
             auto: true,
             sel: 0,
+            target: None,
         });
         if let PreConnectModel::ServerList { rows } = m {
             assert_eq!(rows.len(), 1);
@@ -226,6 +260,7 @@ mod tests {
             lost: Some("lost"),
             auto: true,
             sel: 0,
+            target: None,
         });
         assert_eq!(
             m,
@@ -233,5 +268,101 @@ mod tests {
                 name: "lost".into()
             })
         );
+    }
+
+    #[test]
+    fn a_pending_target_shows_progress_not_the_picker() {
+        // Switching servers: the old link is down, the new one is not
+        // dialled yet. The list here would ask the user to pick the
+        // server they just picked.
+        let mut d = Discovery::default();
+        d.upsert(ad("laptop", "laptop"));
+        let (_, l, p, c) = empty();
+        let m = run(RunArgs {
+            discovery: &d,
+            link: &l,
+            probes: &p,
+            creds: &c,
+            preferred: None,
+            lost: None,
+            auto: false,
+            sel: 0,
+            target: Some("laptop"),
+        });
+        assert_eq!(
+            m,
+            PreConnectModel::Status(ConnectingKind::ToServer {
+                name: "laptop".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_attempt_hands_the_picker_back() {
+        // Without this the target would pin the screen to
+        // "connecting…" for a server that will not answer.
+        let mut d = Discovery::default();
+        d.upsert(ad("laptop", "laptop"));
+        let l = Link {
+            last_err: Some("connection refused".into()),
+            ..Default::default()
+        };
+        let p = Probes::default();
+        let c = Credentials::default();
+        let m = run(RunArgs {
+            discovery: &d,
+            link: &l,
+            probes: &p,
+            creds: &c,
+            preferred: None,
+            lost: None,
+            auto: false,
+            sel: 0,
+            target: Some("laptop"),
+        });
+        assert!(matches!(m, PreConnectModel::ServerList { .. }));
+    }
+
+    #[test]
+    fn a_failed_probe_on_the_target_hands_the_picker_back() {
+        let mut d = Discovery::default();
+        d.upsert(ad("laptop", "laptop"));
+        let l = Link::default();
+        let mut p = Probes::default();
+        p.set_failed("127.0.0.1:6000".into(), "no route".into());
+        let c = Credentials::default();
+        let m = run(RunArgs {
+            discovery: &d,
+            link: &l,
+            probes: &p,
+            creds: &c,
+            preferred: None,
+            lost: None,
+            auto: false,
+            sel: 0,
+            target: Some("laptop"),
+        });
+        assert!(matches!(m, PreConnectModel::ServerList { .. }));
+    }
+
+    #[test]
+    fn a_target_mdns_cannot_see_falls_through_to_the_picker() {
+        // Nothing to dial: the runtime cannot make progress on this
+        // target, so the other servers are the useful thing to show.
+        let mut d = Discovery::default();
+        d.upsert(ad("home", "tower"));
+        let (_, l, p, c) = empty();
+        let m = run(RunArgs {
+            discovery: &d,
+            link: &l,
+            probes: &p,
+            creds: &c,
+            preferred: None,
+            lost: None,
+            auto: false,
+            sel: 0,
+            target: Some("ghost"),
+        });
+        assert!(matches!(m, PreConnectModel::ServerList { .. }));
     }
 }
