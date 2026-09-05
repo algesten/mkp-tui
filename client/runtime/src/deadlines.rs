@@ -72,14 +72,17 @@ pub fn nearest_deadline(sources: &Sources) -> Option<Instant> {
 
     // Reconnect backoff — a dropped link that is still wanted is
     // dialed again at `closed_at + RECONNECT_DELAY`; the loop has to
-    // be awake for `link_retry_due` to flip.
+    // be awake for `retry_due` to flip. Once that instant has passed
+    // it is no longer a transition to wait for (the link may sit in
+    // `Closed` for as long as the server is away).
     if sources.link.phase == LinkPhase::Closed {
         consider(
             &mut soonest,
             sources
                 .link
                 .closed_at
-                .map(|t| t + crate::execute::RECONNECT_DELAY),
+                .map(|t| t + crate::execute::RECONNECT_DELAY)
+                .filter(|t| *t > sources.clock.now),
         );
     }
 
@@ -89,7 +92,7 @@ pub fn nearest_deadline(sources: &Sources) -> Option<Instant> {
         &mut soonest,
         sources
             .probes
-            .nearest_retry_at(mkpclient_state_probes::FAILED_PROBE_TTL),
+            .nearest_retry_at(sources.clock.now, crate::execute::FAILED_PROBE_TTL),
     );
 
     soonest

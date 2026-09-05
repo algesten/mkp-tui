@@ -7,6 +7,11 @@
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Intent {
+    /// When the user last asked for a link (`ConnectTo` / `BeginPair`),
+    /// stamped from the runtime clock at dispatch. A closed link is
+    /// otherwise re-dialed only after a backoff; an ask made since it
+    /// closed is honoured right away.
+    pub requested_at: Option<std::time::Instant>,
     /// mDNS instance name of the server the user wants to be
     /// connected to. `None` means "no active connection wanted".
     /// Survives the link dropping: a still-set target is what the

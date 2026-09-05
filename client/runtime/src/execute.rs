@@ -14,9 +14,12 @@
 //! connected: as long as `intent.target` still names a server, the
 //! diff re-dials it. Reconnecting after a drop is therefore emergent
 //! rather than a handler — the only extra rule is a backoff so a
-//! server that refuses us is not hammered every tick. That backoff
-//! is [`link_retry_due`], a query over `link.closed_at` and the
-//! clock (spec § "Time is a source field").
+//! server that refuses us is not hammered every tick. That backoff,
+//! and the one on failed probes, is [`retry_due`]: a query over the
+//! instants on the link / probes / intent sources and the clock
+//! (spec § "Time is a source field"). Nothing is aged out of a
+//! source by the tick; the memo answers whether the held fact is
+//! still current.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -40,6 +43,12 @@ use crate::sources::Sources;
 /// link is dialed again. Long enough that a refusing server is not
 /// hit every tick, short enough that a blip reads as a pause.
 pub const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+
+/// How long a failed probe stands before the address is probed
+/// again. A server that is advertised but not yet answering (just
+/// relaunched, or a stale mDNS entry) fails its probe; without an
+/// expiry that failure would pin the address for good.
+pub const FAILED_PROBE_TTL: Duration = Duration::from_secs(5);
 
 // ─── outputs ────────────────────────────────────────────────────────
 
@@ -96,13 +105,26 @@ impl<'a> IntentInput<'a> {
 }
 
 #[derive(drv::Input)]
+pub struct IntentRequestInput {
+    pub requested_at: Option<Instant>,
+}
+
+impl IntentRequestInput {
+    pub fn new(i: &Intent) -> Self {
+        Self {
+            requested_at: i.requested_at,
+        }
+    }
+}
+
+#[derive(drv::Input)]
 pub struct LinkStateInput<'a> {
     pub phase_connected: bool,
     /// Teardown in flight: nothing may be dialed until the worker
     /// reports `Closed`.
     pub phase_closing: bool,
     /// The worker reported the link gone (peer closed, or the dial
-    /// failed). Dialing again is gated by [`link_retry_due`].
+    /// failed). Dialing again is gated by [`retry_due`].
     pub phase_closed: bool,
     pub kind_client: bool,
     pub kind_pairing: bool,
@@ -222,15 +244,52 @@ pub fn desired_link<'a>(intent: IntentInput<'a>, pairing: PairingPhaseInput) -> 
     Arc::new(DesiredLink::Closed)
 }
 
-/// "May a closed link be dialed again yet?" — `true` when the link
-/// never closed, or when [`RECONNECT_DELAY`] has passed since it
-/// did. Reads the clock, so it recomputes every tick; its consumer
-/// [`link_action`] only re-fires when the answer flips.
+/// Which time-gated retries are open right now. The one memo that
+/// reads the clock on the link path: it recomputes every tick, and
+/// its consumer [`link_action`] only re-fires when an answer flips.
+#[derive(Debug, Clone, PartialEq, Eq, drv::Input)]
+pub struct RetryDue {
+    /// The user asked for a link since it last closed: dial now,
+    /// regardless of backoff. Pairing links are only ever re-dialed
+    /// this way.
+    pub link_requested: bool,
+    /// [`RECONNECT_DELAY`] has passed since the link closed (or it
+    /// never closed).
+    pub link_backoff_elapsed: bool,
+    /// Addresses whose probe failure is older than
+    /// [`FAILED_PROBE_TTL`]: treat as never probed.
+    pub probe_addrs: Vec<String>,
+}
+
 #[drv::memo(single)]
-pub fn link_retry_due(link: LinkClosedInput, clock: ClockInput) -> bool {
-    match link.closed_at {
-        None => true,
-        Some(closed_at) => clock.now >= closed_at + RECONNECT_DELAY,
+pub fn retry_due<'a>(
+    link: LinkClosedInput,
+    intent: IntentRequestInput,
+    probes: ProbesInput<'a>,
+    clock: ClockInput,
+) -> RetryDue {
+    let (link_requested, link_backoff_elapsed) = match link.closed_at {
+        None => (true, true),
+        Some(closed_at) => (
+            intent.requested_at.is_some_and(|t| t >= closed_at),
+            clock.now >= closed_at + RECONNECT_DELAY,
+        ),
+    };
+    let mut probe_addrs: Vec<String> = probes
+        .by_addr
+        .iter()
+        .filter_map(|(addr, outcome)| match outcome {
+            ProbeOutcome::Failed { at, .. } if clock.now >= *at + FAILED_PROBE_TTL => {
+                Some(addr.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    probe_addrs.sort();
+    RetryDue {
+        link_requested,
+        link_backoff_elapsed,
+        probe_addrs,
     }
 }
 
@@ -238,7 +297,7 @@ pub fn link_retry_due(link: LinkClosedInput, clock: ClockInput) -> bool {
 pub fn link_action<'a, 'b, 'c, 'd>(
     desired: Arc<DesiredLink>,
     link: LinkStateInput<'a>,
-    retry_due: bool,
+    retry: RetryDue,
     discovery: DiscoveryInput<'b>,
     probes: ProbesInput<'c>,
     creds: CredentialsInput<'d>,
@@ -263,9 +322,8 @@ pub fn link_action<'a, 'b, 'c, 'd>(
                 return LinkAction::Noop;
             }
             // A pairing handshake that ended is not retried on its
-            // own: the user re-triggers it (dispatch acks `Closed`
-            // back to `Idle` on `BeginPair`).
-            if link.phase_closed {
+            // own; only a fresh ask from the user dials again.
+            if link.phase_closed && !retry.link_requested {
                 return LinkAction::Noop;
             }
             // Need an mDNS sighting to know where to dial.
@@ -284,8 +342,9 @@ pub fn link_action<'a, 'b, 'c, 'd>(
             if link.kind_client && link.phase_connected {
                 return LinkAction::Noop;
             }
-            // Dropped: wait out the backoff before dialing again.
-            if link.phase_closed && !retry_due {
+            // Dropped: wait out the backoff before dialing again,
+            // unless the user asked for this link since the drop.
+            if link.phase_closed && !retry.link_requested && !retry.link_backoff_elapsed {
                 return LinkAction::Noop;
             }
             // Need an mDNS sighting to know where to dial. A server
@@ -297,6 +356,11 @@ pub fn link_action<'a, 'b, 'c, 'd>(
 
             match probes.by_addr.get(&addr) {
                 None => LinkAction::Probe { addr },
+                // A failure that has aged out is as good as no probe;
+                // the re-probe's in-flight mark overwrites it.
+                Some(ProbeOutcome::Failed { .. }) if retry.probe_addrs.contains(&addr) => {
+                    LinkAction::Probe { addr }
+                }
                 Some(ProbeOutcome::InFlight) | Some(ProbeOutcome::Failed { .. }) => {
                     LinkAction::Noop
                 }
@@ -372,14 +436,16 @@ fn apply_link(sources: &mut Sources, drivers: &Drivers) {
         IntentInput::new(&sources.intent),
         PairingPhaseInput::new(&sources.pairing),
     );
-    let retry_due = link_retry_due(
+    let retry = retry_due(
         LinkClosedInput::new(&sources.link),
+        IntentRequestInput::new(&sources.intent),
+        ProbesInput::new(&sources.probes),
         ClockInput::new(&sources.clock),
     );
     let action = link_action(
         desired,
         LinkStateInput::new(&sources.link),
-        retry_due,
+        retry,
         DiscoveryInput::new(&sources.discovery),
         ProbesInput::new(&sources.probes),
         CredentialsInput::new(&sources.credentials),
@@ -556,14 +622,16 @@ mod tests {
             IntentInput::new(&sources.intent),
             PairingPhaseInput::new(&sources.pairing),
         );
-        let retry_due = link_retry_due(
+        let retry = retry_due(
             LinkClosedInput::new(&sources.link),
+            IntentRequestInput::new(&sources.intent),
+            ProbesInput::new(&sources.probes),
             ClockInput::new(&sources.clock),
         );
         link_action(
             desired,
             LinkStateInput::new(&sources.link),
-            retry_due,
+            retry,
             DiscoveryInput::new(&sources.discovery),
             ProbesInput::new(&sources.probes),
             CredentialsInput::new(&sources.credentials),
@@ -648,5 +716,50 @@ mod tests {
         drop_link(&mut sources);
         sources.clock.tick(sources.clock.now + RECONNECT_DELAY);
         assert_eq!(action(&sources), LinkAction::Noop);
+    }
+
+    #[test]
+    fn an_ask_since_the_drop_dials_without_waiting() {
+        let mut sources = wanted_and_reachable();
+        // Asked before the drop: the ask does not outrank the backoff.
+        sources.intent.requested_at = Some(sources.clock.now);
+        sources
+            .clock
+            .tick(sources.clock.now + Duration::from_millis(1));
+        drop_link(&mut sources);
+        assert_eq!(action(&sources), LinkAction::Noop);
+
+        // Asked again after seeing the drop (same tick counts).
+        sources.intent.requested_at = Some(sources.clock.now);
+        assert!(matches!(action(&sources), LinkAction::ConnectClient { .. }));
+
+        // Pairing is re-dialed the same way.
+        sources.intent.target = None;
+        sources.intent.pair_target = Some(Arc::from("Toy Machine"));
+        assert!(matches!(action(&sources), LinkAction::ConnectPair { .. }));
+    }
+
+    #[test]
+    fn failed_probe_is_reprobed_only_once_it_has_aged_out() {
+        let mut sources = wanted_and_reachable();
+        sources
+            .probes
+            .set_failed("127.0.0.1:4242".into(), "refused".into(), sources.clock.now);
+        assert_eq!(action(&sources), LinkAction::Noop);
+
+        sources
+            .clock
+            .tick(sources.clock.now + FAILED_PROBE_TTL - Duration::from_millis(1));
+        assert_eq!(action(&sources), LinkAction::Noop);
+
+        sources
+            .clock
+            .tick(sources.clock.now + Duration::from_millis(1));
+        assert_eq!(
+            action(&sources),
+            LinkAction::Probe {
+                addr: "127.0.0.1:4242".into()
+            }
+        );
     }
 }
