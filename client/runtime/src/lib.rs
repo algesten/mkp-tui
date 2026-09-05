@@ -167,16 +167,25 @@ impl Runtime {
         while self.wake_rx.try_recv().is_ok() {}
     }
 
+    /// How long the loop would block right now. A deadline already
+    /// in the past yields zero — wake now — rather than falling into
+    /// the no-deadline fallback, which would park the loop for a
+    /// minute with work already due and hide every other pending
+    /// deadline behind the stale one.
+    pub fn next_timeout(&self) -> Duration {
+        match nearest_deadline(&self.sources) {
+            Some(d) => d.saturating_duration_since(Instant::now()),
+            None => Duration::from_secs(60),
+        }
+    }
+
     /// Block until something happens, computing the timeout from
     /// `nearest_deadline(&self.sources)`. The single call site every
     /// caller should reach for: anything that needs the loop to wake
-    /// at a wall-clock instant (spinner cadence, toast expiry, or
-    /// preview timeout) folds itself into
+    /// at a wall-clock instant (spinner cadence, toast expiry,
+    /// preview timeout, reconnect backoff) folds itself into
     /// `nearest_deadline` and the loop stays unchanged.
     pub fn wait_for_next_deadline(&self) {
-        let timeout = nearest_deadline(&self.sources)
-            .and_then(|d| d.checked_duration_since(Instant::now()))
-            .unwrap_or(Duration::from_secs(60));
-        self.wait_for_wake(timeout);
+        self.wait_for_wake(self.next_timeout());
     }
 }

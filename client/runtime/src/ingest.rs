@@ -144,10 +144,15 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 // way.
                 maybe_persist_confirmed_pairing(sources, drivers);
 
+                // A close we asked for (`Closing`) arms no backoff:
+                // whatever intent names next is dialed right away. A
+                // close that happened to us is stamped so the redial
+                // waits out `RECONNECT_DELAY`.
+                let asked_for = sources.link.phase == LinkPhase::Closing;
                 sources.link.phase = LinkPhase::Closed;
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
-                sources.link.closed_at = Some(sources.clock.now);
+                sources.link.closed_at = (!asked_for).then_some(sources.clock.now);
                 // Nothing in flight on this link will be answered.
                 sources.requests.clear();
                 sources.playlists.pending_request = None;

@@ -839,10 +839,27 @@ fn reject_pair(sources: &mut Sources, drivers: &Drivers) {
 
 fn disconnect(sources: &mut Sources, drivers: &Drivers) {
     sources.intent.target = None;
+    sources.intent.pair_target = None;
+    // A disconnect the user asked for is where a reconnect stops:
+    // `auto_connect` is left armed by the lost-server path so a
+    // failing redial keeps trying, and `lost_server` is what keeps
+    // the modal up. Leaving either set would have some query act on
+    // a connection nobody wants.
+    sources.session.auto_connect = false;
+    sources.session.lost_server = None;
+    request_close(sources, drivers);
+}
+
+/// Ask the worker to tear the link down. The sync intent write is
+/// `Closing`: it keeps `link_action` from dialing until the worker
+/// reports `Closed`, and it marks the close as asked for, so ingest
+/// does not arm the reconnect backoff for it.
+fn request_close(sources: &mut Sources, drivers: &Drivers) {
     if matches!(
         sources.link.phase,
         LinkPhase::Connected | LinkPhase::Connecting
     ) {
+        sources.link.phase = LinkPhase::Closing;
         drivers.link.execute([&LinkCmd::Disconnect]);
     }
 }
@@ -850,7 +867,7 @@ fn disconnect(sources: &mut Sources, drivers: &Drivers) {
 fn forget(sources: &mut Sources, drivers: &Drivers, fingerprint: String) {
     if sources.intent.target.as_deref() == Some(fingerprint.as_str()) {
         sources.intent.target = None;
-        drivers.link.execute([&LinkCmd::Disconnect]);
+        request_close(sources, drivers);
     }
     drivers
         .credentials
@@ -2023,12 +2040,7 @@ fn server_picker_modal_select(sources: &mut Sources, drivers: &Drivers) {
     sources.session.auto_connect = true;
     sources.session.lost_server = None;
     connect_to(sources, name);
-    if matches!(
-        sources.link.phase,
-        LinkPhase::Connected | LinkPhase::Connecting
-    ) {
-        drivers.link.execute([&LinkCmd::Disconnect]);
-    }
+    request_close(sources, drivers);
     sources.screen = Screen::NowPlaying;
 }
 

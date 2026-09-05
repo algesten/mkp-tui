@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use mkpclient_driver_discovery_core::ServerAd;
 use mkpclient_runtime::views::{shell_model, ShellInput, ShellModel};
-use mkpclient_runtime::{ClientMsg, Runtime, TuiCursorEvent};
+use mkpclient_runtime::{ClientMsg, Runtime, SemanticEvent, TuiCursorEvent};
 use mkpclient_state_link::LinkPhase;
 use mkpclient_state_ui_history::MiddleMode;
 use mkpclient_state_ui_screen::Screen;
@@ -349,4 +349,110 @@ fn outage_paints_the_main_view_with_the_lost_modal() {
         !contains("Searching for Make Play server"),
         "must not paint the pre-connect screen: {text:#?}"
     );
+}
+
+#[test]
+fn switching_servers_is_not_a_loss() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let mut h = connect_and_browse(MockServer::start(certs::generate(), script()));
+    let old = h.server_name();
+
+    // A second server, paired under a different cert, comes into
+    // view; the user picks it in the switch modal.
+    let other = MockServer::start(certs::generate(), script());
+    let other_name = format!("mock-{}", other.addr.port());
+    h.rt.sources.discovery.upsert(ServerAd {
+        name: other_name.clone(),
+        host: "127.0.0.1".into(),
+        addr: std::net::Ipv4Addr::LOCALHOST,
+        port: other.addr.port(),
+    });
+    h.rt.sources
+        .credentials
+        .insert(mkpclient_state_credentials::PairingEntry {
+            fingerprint: other.certs.fingerprint.clone(),
+            host: "127.0.0.1".into(),
+            server_cert_pem: other.certs.server_cert_pem.clone(),
+            client_cert_pem: other.certs.client_cert_pem.clone(),
+            client_key_pem: other.certs.client_key_pem.clone(),
+        });
+    let selected =
+        h.rt.sources
+            .discovery
+            .servers
+            .iter()
+            .position(|s| s.name == other_name)
+            .expect("other server listed");
+    h.rt.sources.screen = Screen::ServerPicker { selected };
+    h.dispatch(TuiCursorEvent::ServerPickerModalSelect);
+
+    // Every tick until the new server is current: never reported as
+    // a loss of the old one, and no modal about it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        h.rt.tick();
+        let s = &h.rt.sources;
+        assert!(
+            s.session.lost_server.is_none(),
+            "a switch must not stash the server being left"
+        );
+        assert!(!matches!(s.screen, Screen::ServerLostModal { .. }));
+        // `resumed` rather than `tracks_loaded`: the old server's rows
+        // survive the close, so only rows fetched after the restore
+        // ran prove the new server is serving the view.
+        if s.session.backend_name.as_deref() == Some(other_name.as_str()) && resumed(&h.rt) {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "switch did not complete: {:?}",
+            s.link.phase
+        );
+        h.rt.wait_for_wake(remaining.min(Duration::from_millis(50)));
+    }
+    assert_ne!(old, other_name);
+    assert!(other
+        .received()
+        .iter()
+        .any(|m| matches!(m, ClientMsg::Hello { .. })));
+}
+
+#[test]
+fn disconnecting_during_a_reconnect_stops_it() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let mut h = connect_and_browse(MockServer::start(certs::generate(), script()));
+    let name = h.server_name();
+
+    h.mock.drop_client();
+    h.rt.sources.discovery.remove(&name);
+    h.tick_until(
+        |rt| matches!(rt.sources.screen, Screen::ServerLostModal { .. }),
+        Duration::from_secs(5),
+    )
+    .expect("lost modal");
+
+    // The user says stop while the runtime is still waiting.
+    h.dispatch(SemanticEvent::Disconnect);
+    h.tick_once();
+    assert!(h.rt.sources.session.lost_server.is_none());
+    assert_eq!(shell(&h.rt), ShellModel::PreConnect);
+
+    // The server comes back: nothing dials it.
+    h.rt.sources.discovery.upsert(ServerAd {
+        name,
+        host: "127.0.0.1".into(),
+        addr: std::net::Ipv4Addr::LOCALHOST,
+        port: h.mock.addr.port(),
+    });
+    let hellos_before = count(&h.mock.received(), |m| matches!(m, ClientMsg::Hello { .. }));
+    let waited_until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < waited_until {
+        h.rt.tick();
+        assert_ne!(h.rt.sources.link.phase, LinkPhase::Connected);
+        assert_eq!(shell(&h.rt), ShellModel::PreConnect);
+        h.rt.wait_for_wake(Duration::from_millis(50));
+    }
+    let hellos_after = count(&h.mock.received(), |m| matches!(m, ClientMsg::Hello { .. }));
+    assert_eq!(hellos_after, hellos_before);
 }
