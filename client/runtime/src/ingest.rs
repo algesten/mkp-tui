@@ -65,7 +65,6 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                     LinkKind::Pairing => StateLinkKind::Pairing,
                 });
                 sources.link.last_err = None;
-                sources.link.clear_retry();
                 match kind {
                     LinkKind::Pairing => {
                         sources.pairing.phase = PairingPhase::AwaitingResponse;
@@ -97,6 +96,14 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 }
             }
             LinkEvent::Frame(response) => {
+                // First frame back is what proves the connection is
+                // usable, so this — not the TLS handshake — is where
+                // the backoff resets. A server that accepts and then
+                // hangs up (app wedged, authorisation missing, protocol
+                // refused) completes the handshake every time, and
+                // clearing on that alone pinned the delay to the bottom
+                // of the table: a redial every 500 ms, forever.
+                sources.link.clear_retry();
                 let response = *response;
                 if response.seq == 0 {
                     fold_broadcast(sources, response);
@@ -114,6 +121,9 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 fingerprint,
                 code,
             } => {
+                // Same reason as `Frame`: the peer answered, so
+                // the connection is usable and the backoff resets.
+                sources.link.clear_retry();
                 sources.pairing = Pairing {
                     phase: PairingPhase::AwaitingConfirmation,
                     code: Some(Arc::from(code)),
@@ -192,9 +202,9 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 // resumption rule per source, each with its own way to
                 // strand a pane mid-stream.
                 //
-                // What the user keeps is where they were — screen,
-                // cursor, focus, history, filters, selection — none of
-                // which is touched here.
+                // What the user keeps is where they were on screen:
+                // the active screen, cursor, focus, filters and
+                // selection.
                 sources.requests.clear();
                 sources.responses.clear();
                 sources.server = Default::default();

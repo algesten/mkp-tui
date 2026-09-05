@@ -205,10 +205,11 @@ pub fn draw(frame: &mut Frame, app: &AppState, rt: &Runtime) {
 
     // A dropped link no longer means the full-screen server list. When
     // the lost-server modal is up the runtime is redialling behind it,
-    // and the retained view stays painted underneath so the reconnect
-    // is visibly a pause rather than a reset. The pre-connect screen
-    // is for genuinely having nowhere to be: first run, or after the
-    // user gave up on the server.
+    // so the user stays in the layout they were working in rather than
+    // being thrown back to server selection. The columns behind the
+    // modal are empty — the server-derived rows are dropped on close
+    // and rebuilt on reconnect. The pre-connect screen is for genuinely
+    // having nowhere to be: first run, or after giving up on a server.
     let reconnecting = matches!(rt.sources.screen, Screen::ServerLostModal { .. });
     if rt.sources.link.phase != LinkPhase::Connected && !reconnecting {
         draw_pre_connect(frame, area, app, rt);
