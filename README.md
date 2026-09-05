@@ -1,6 +1,6 @@
 # mkp-tui
 
-The open-source half of [Make Play](https://github.com/algesten/mkp): the wire
+The open-source half of [Make Play](https://makeplayapp.com/): the wire
 protocol and the cross-platform client that speaks it, including the ratatui
 terminal UI.
 
