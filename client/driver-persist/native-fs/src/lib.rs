@@ -449,6 +449,42 @@ mod view_tests {
         assert!(legacy.exists());
     }
 
+    /// The legacy file has no music-backend dimension, so nothing
+    /// records which catalogue it came from. Serving it to *every*
+    /// backend that lacks a view of its own re-creates the exact
+    /// failure that keying the view by backend exists to prevent: a
+    /// MusicKit album / artist id restored under Tidal, which is "a
+    /// request that could only fail" (commit message of 2604f5a).
+    ///
+    /// The compat requirement is that the upgrade doesn't lose the
+    /// user's view — one backend claims it. Handing the same file to
+    /// the next backend as well is not compat, it's the bug.
+    #[test]
+    fn a_1_0_0_view_is_not_handed_to_a_second_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = config_root(tmp.path());
+
+        // A 1.0.0 install: one view per server, no backend segment.
+        let legacy = tmp.path().join("hall").join("last_view");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, toml::to_string(&view("from-1-0-0")).unwrap()).unwrap();
+
+        // Upgrade. The backend that happened to be live reads the
+        // legacy view and, on the next navigation, writes it under
+        // its own path.
+        let mk = ViewKey::new("hall", "musickit");
+        let migrated = load_view(&mk).expect("the live backend picks the legacy view up");
+        save_view(&mk, &migrated).unwrap();
+
+        // Now the server swaps. Tidal has never had a view here, and
+        // the 1.0.0 file holds ids from a catalogue it cannot resolve.
+        assert!(
+            load_view(&ViewKey::new("hall", "tidal")).is_none(),
+            "a legacy view another backend already claimed must not be \
+             restored under a different backend"
+        );
+    }
+
     #[test]
     fn clearing_a_view_leaves_the_other_backend_alone() {
         let tmp = tempfile::tempdir().unwrap();

@@ -14,7 +14,7 @@ use common::certs;
 use common::harness::Harness;
 use common::mock_server;
 use common::mock_server::{MockServer, ScriptStep};
-use mkpclient_runtime::SemanticEvent;
+use mkpclient_runtime::{SemanticEvent, TuiCursorEvent};
 use mkpclient_state_ui_history::MiddleMode;
 use mkproto::{ClientMsg, Playlist, ServerMsg};
 
@@ -167,4 +167,61 @@ fn switching_backend_clears_navigation_into_the_old_catalogue() {
     );
     assert!(h.rt.sources.playlist_tracks.playlist_id.is_none());
     assert!(h.rt.sources.queue.queue_id.is_none());
+}
+
+/// `LinkEvent::Closed` clears `pending_playlists` along with the
+/// other server-derived sources, on the grounds that
+/// "server-side-observed state is no longer valid"
+/// (`client/runtime/src/ingest.rs`). A swap is a reconnect that
+/// skipped the socket, so it has to clear the same things.
+///
+/// It doesn't. An optimistic create still awaiting its reply when
+/// the swap lands survives into the new backend's session, where it
+/// renders as an extra row in the left column
+/// (`queries::filtered_playlist_count`) and — because
+/// `any_spinner_active` returns true while `creating` is non-empty
+/// (`client/runtime/src/deadlines.rs`) — spins forever, since the
+/// reply that would have cleared it belonged to the old session.
+/// That is the same never-ending spinner this PR sets out to fix.
+///
+/// `artist_extras` and `activity`, also cleared on `Closed`, survive
+/// the swap for the same reason.
+#[test]
+fn switching_backend_drops_optimistic_playlist_mutations() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let mut h = Harness::connect(switching_mock());
+    h.tick_until(|rt| rt.sources.playlists.loaded, Duration::from_secs(3))
+        .expect("initial playlists to load");
+
+    // Create a playlist on the outgoing backend. The mock never
+    // answers `CreatePlaylist`, so the optimistic shadow entry is
+    // still in flight when the swap arrives.
+    h.rt.sources.screen = mkpclient_state_ui_screen::Screen::CreatePlaylist {
+        input: "Late Night".into(),
+        add_item: None,
+    };
+    h.dispatch(TuiCursorEvent::CreatePlaylistSubmit);
+    assert_eq!(
+        h.rt.sources.pending_playlists.creating.len(),
+        1,
+        "the optimistic create should be pending before the swap"
+    );
+
+    h.dispatch(SemanticEvent::SendRequest {
+        msg: ClientMsg::Ping,
+        task_id: None,
+    });
+    h.tick_until(
+        |rt| rt.sources.server.backend.as_deref() == Some("tidal"),
+        Duration::from_secs(3),
+    )
+    .expect("backend swap to be observed");
+
+    assert!(
+        h.rt.sources.pending_playlists.creating.is_empty(),
+        "an optimistic mutation aimed at the previous backend must not \
+         survive the swap — its reply never comes, so it renders and \
+         spins forever"
+    );
 }
