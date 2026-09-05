@@ -180,10 +180,22 @@ pub fn backend_action<'a, 'b>(
             // on its Closed.
             BackendAction::Set { name }
         }
-        (DesiredBackend::Disconnected, Some(cur)) => BackendAction::Clear {
-            old: cur.to_string(),
-            lost: intent.target.is_some() || intent.pair_target.is_some(),
-        },
+        (DesiredBackend::Disconnected, Some(cur)) => {
+            // A loss is a close where we still want *this* server.
+            // "Intent is non-empty" is not that test: a deliberate
+            // switch sets intent to the *new* server and then tears the
+            // old link down, so it would score as a loss and stash the
+            // server the user just left — which the reconnect would
+            // then dial, undoing the switch.
+            let lost = match intent.target {
+                Some(t) => **t == **cur,
+                None => false,
+            };
+            BackendAction::Clear {
+                old: cur.to_string(),
+                lost,
+            }
+        }
         _ => BackendAction::Noop,
     }
 }

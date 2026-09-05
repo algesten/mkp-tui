@@ -861,6 +861,13 @@ fn reject_pair(sources: &mut Sources, drivers: &Drivers) {
 
 fn disconnect(sources: &mut Sources, drivers: &Drivers) {
     sources.intent.target = None;
+    // Disarm here, not in the lifecycle: `apply_connect` runs before
+    // `apply_backend` in a tick, so a still-armed `auto_connect` would
+    // rewrite the intent just cleared — from `preferred_server`, which
+    // survives — before anything observed the close. The lost-server
+    // branch leaves `auto_connect` armed on purpose so a failing
+    // reconnect keeps retrying, and this is where the user says stop.
+    sources.session.auto_connect = false;
     if matches!(
         sources.link.phase,
         LinkPhase::Connected | LinkPhase::Connecting
