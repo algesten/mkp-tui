@@ -70,10 +70,12 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                         sources.pairing.phase = PairingPhase::AwaitingResponse;
                     }
                     LinkKind::Client => {
-                        // Post-connect handshake: identify + pull
-                        // initial state + playlists. The execute
-                        // phase picks these up next tick and ships
-                        // them.
+                        // Post-connect handshake: identify. The
+                        // server answers `Hello` with
+                        // `BackendChanged`, and that reply is what
+                        // starts the session proper — see
+                        // `begin_backend_session`. The execute phase
+                        // picks this up next tick and ships it.
                         sources.requests.push(
                             ClientMsg::Hello {
                                 peer: peer.clone(),
@@ -81,17 +83,6 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                             },
                             None,
                         );
-                        sources.requests.push(ClientMsg::GetState, None);
-                        let task_id = sources.requests.alloc_task_id();
-                        let seq = sources
-                            .requests
-                            .push(ClientMsg::GetPlaylists, Some(task_id));
-                        // Track this seq so an `Error` reply still
-                        // flips `playlists.loaded = true` (with empty
-                        // items) and is consumed before the
-                        // `ErrorModal` lifecycle sees it.
-                        sources.playlists.pending_request = Some(seq);
-                        sources.playlists.pending_task = Some(task_id);
                     }
                 }
             }
@@ -162,6 +153,55 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
     }
 }
 
+/// Start a backend session: drop everything derived from the
+/// previous backend and request the new one's world.
+///
+/// This is the single entry point for "a backend session begins",
+/// and both situations that can begin one funnel through it:
+///
+///   - Connect. The server answers `Hello` with `BackendChanged` on
+///     the request's seq (only after the protocol-version check has
+///     passed), so every client that gets past the handshake lands
+///     here exactly once.
+///   - Backend swap. The server broadcasts `BackendChanged` on
+///     seq 0 after resetting play state, queue and caches.
+///
+/// Both therefore reset identically, which is the point: a swap is
+/// a reconnect that skipped the socket. Requesting the world here
+/// rather than on `LinkEvent::Connected` costs one round-trip at
+/// startup and buys a single code path.
+///
+/// Cursors are deliberately left alone — the `cursor_clamp`
+/// lifecycle re-derives them from the (now empty) sources.
+fn begin_backend_session(sources: &mut Sources, backend: &str) {
+    sources.server.backend = Some(Arc::from(backend));
+
+    // Everything below is derived from the previous backend's
+    // catalogue and cannot survive the swap. `history` goes too:
+    // its `mode` and back / forward stacks hold album / artist ids
+    // that the new backend has never heard of.
+    sources.queue = Default::default();
+    sources.playlists = Default::default();
+    sources.playlist_tracks.clear();
+    sources.search.clear();
+    sources.history = Default::default();
+
+    // Let the restore lifecycle re-run for the new backend once its
+    // playlists land.
+    sources.session.auto_restored_view = false;
+
+    sources.requests.push(ClientMsg::GetState, None);
+    let task_id = sources.requests.alloc_task_id();
+    let seq = sources
+        .requests
+        .push(ClientMsg::GetPlaylists, Some(task_id));
+    // Track this seq so an `Error` reply still flips
+    // `playlists.loaded = true` (with empty items) and is consumed
+    // before the `ErrorModal` lifecycle sees it.
+    sources.playlists.pending_request = Some(seq);
+    sources.playlists.pending_task = Some(task_id);
+}
+
 /// Some response variants carry live state (not just a reply) and
 /// should be mirrored into the matching source even when they arrive
 /// on a non-zero seq.
@@ -207,17 +247,8 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
     }
     match &response.msg {
         ServerMsg::BackendChanged { backend } => {
-            sources.server.backend = Some(Arc::from(backend.as_str()));
-            // Backend initialization / swap invalidates all state
-            // derived from the prior backend.
-            sources.queue = Default::default();
-            sources.playlists = Default::default();
-            sources.playlist_tracks.clear();
-            sources.search.clear();
+            begin_backend_session(sources, backend.as_str());
             return true;
-        }
-        ServerMsg::Playlists { playlists } => {
-            sources.playlists.set_all(playlists.clone());
         }
         ServerMsg::PlaylistCreated { playlist } => {
             sources.playlists.upsert(playlist.clone());
@@ -297,12 +328,7 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
             sources.server.play = Some(play);
         }
         ServerMsg::BackendChanged { backend } => {
-            sources.server.backend = Some(Arc::from(backend));
-            // Backend swap invalidates queue + playlists + tracks.
-            sources.queue = Default::default();
-            sources.playlists = Default::default();
-            sources.playlist_tracks.clear();
-            sources.search.clear();
+            begin_backend_session(sources, &backend);
         }
         ServerMsg::Playlists { playlists } => {
             sources.playlists.set_all(playlists);

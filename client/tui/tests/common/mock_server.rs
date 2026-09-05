@@ -148,3 +148,24 @@ fn handle_connection(
         }
     }
 }
+
+/// The reply a real server gives to `Hello`.
+///
+/// It answers on the request's seq with `BackendChanged`, not `Pong`
+/// (see the server's `session.rs`), and the client hangs its whole
+/// session start off that frame — `GetState` / `GetPlaylists` are
+/// only issued once it lands. A script that answers `Hello` with
+/// anything else leaves the runtime waiting forever, so scenarios
+/// should use this rather than inventing their own reply.
+#[allow(dead_code)]
+pub fn hello_reply() -> Vec<ScriptStep> {
+    hello_reply_from("musickit")
+}
+
+/// `hello_reply` for a named backend.
+#[allow(dead_code)]
+pub fn hello_reply_from(backend: &str) -> Vec<ScriptStep> {
+    vec![ScriptStep::Reply(ServerMsg::BackendChanged {
+        backend: backend.to_string(),
+    })]
+}
