@@ -42,16 +42,9 @@ impl<'a> BackendSessionInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendSessionAction {
     Noop,
-    /// Nothing was built from any backend yet: a fresh connect, or a
-    /// reconnect after the link dropped. Ask for this backend's
-    /// world.
-    Start {
-        backend: String,
-    },
-    /// The sources hold a *different* backend's catalogue — the
-    /// server swapped under a live link. Drop what the outgoing one
-    /// produced, then ask for the new one's world.
-    Switch {
+    /// The sources do not hold this backend's catalogue. Drop what
+    /// the previous one produced and ask for this one's world.
+    Restart {
         backend: String,
     },
 }
@@ -62,14 +55,11 @@ pub fn backend_session_action<'a>(input: BackendSessionInput<'a>) -> BackendSess
         // Nothing connected, or the handshake hasn't landed.
         return BackendSessionAction::Noop;
     };
-    match input.built_from {
-        Some(built) if built == backend => BackendSessionAction::Noop,
-        Some(_) => BackendSessionAction::Switch {
-            backend: backend.to_string(),
-        },
-        None => BackendSessionAction::Start {
-            backend: backend.to_string(),
-        },
+    if input.built_from == Some(backend) {
+        return BackendSessionAction::Noop;
+    }
+    BackendSessionAction::Restart {
+        backend: backend.to_string(),
     }
 }
 
@@ -77,10 +67,8 @@ pub fn backend_session_action<'a>(input: BackendSessionInput<'a>) -> BackendSess
 
 pub fn apply_backend_session(sources: &mut Sources) {
     let action = backend_session_action(BackendSessionInput::new(&sources.server));
-    let (backend, switching) = match action {
-        BackendSessionAction::Noop => return,
-        BackendSessionAction::Start { backend } => (backend, false),
-        BackendSessionAction::Switch { backend } => (backend, true),
+    let BackendSessionAction::Restart { backend } = action else {
+        return;
     };
 
     // A swap is a reconnect that skipped the socket, so it drops
@@ -103,13 +91,17 @@ pub fn apply_backend_session(sources: &mut Sources) {
     // ingest's to write and is left exactly as it folded it.
     sources.server.built_from = Some(std::sync::Arc::from(backend.as_str()));
 
-    // Navigation is dropped only on a real swap: `mode` and the
-    // back / forward stacks hold album and artist ids that only the
-    // outgoing backend can resolve. A reconnect keeps them — it is
-    // the same catalogue, and the user was mid-journey through it.
-    if switching {
-        sources.history = Default::default();
-    }
+    // Navigation goes on every restart, reconnects included. `mode`
+    // and the back / forward stacks hold album and artist ids only
+    // one catalogue can resolve, and a restart cannot tell whether
+    // it is the same one: `built_from` describes what the sources
+    // hold, and the close that preceded a reconnect emptied them. So
+    // a server that swapped backend while the link was down is
+    // indistinguishable here from one that did not, and keeping the
+    // stacks would leave Back drilling into ids the server can no
+    // longer resolve. `restore` re-establishes what the user sees;
+    // only the stacks behind it are lost.
+    sources.history = Default::default();
 
     // Let the restore lifecycle re-run for the new backend once its
     // playlists land. Dropping the save-dedup key with it means the
@@ -154,25 +146,23 @@ mod tests {
         );
     }
 
-    /// Connect and reconnect are the same state — nothing built —
-    /// and neither is a swap, so neither discards navigation.
     #[test]
-    fn starts_when_nothing_is_built_yet() {
+    fn restarts_when_nothing_is_built_yet() {
         let s = state(Some("musickit"), None);
         assert_eq!(
             backend_session_action(BackendSessionInput::new(&s)),
-            BackendSessionAction::Start {
+            BackendSessionAction::Restart {
                 backend: "musickit".into()
             }
         );
     }
 
     #[test]
-    fn switches_when_the_server_swaps_under_a_live_link() {
+    fn restarts_when_the_server_swaps_under_a_live_link() {
         let s = state(Some("tidal"), Some("musickit"));
         assert_eq!(
             backend_session_action(BackendSessionInput::new(&s)),
-            BackendSessionAction::Switch {
+            BackendSessionAction::Restart {
                 backend: "tidal".into()
             }
         );

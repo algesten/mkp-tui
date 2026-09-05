@@ -5,6 +5,8 @@
 * Exact playlist track counts appear again after connecting
 * The remembered view is kept per server and music backend, so
   switching backend restores the right one
+* Back / forward history no longer survives a reconnect, since the
+  server may have changed backend while the link was down
 
 # 1.0.0
 
