@@ -65,6 +65,7 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                     LinkKind::Pairing => StateLinkKind::Pairing,
                 });
                 sources.link.last_err = None;
+                sources.link.closed_at = None;
                 match kind {
                     LinkKind::Pairing => {
                         sources.pairing.phase = PairingPhase::AwaitingResponse;
@@ -131,7 +132,7 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 info!("ingest: ProbeResult addr={addr} result={result:?}");
                 match result.clone() {
                     Ok(fingerprint) => sources.probes.set_fingerprint(addr, fingerprint),
-                    Err(msg) => sources.probes.set_failed(addr, msg),
+                    Err(msg) => sources.probes.set_failed(addr, msg, sources.clock.now),
                 }
                 continue;
             }
@@ -146,17 +147,32 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.link.phase = LinkPhase::Closed;
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
+                sources.link.closed_at = Some(sources.clock.now);
+                // Nothing in flight on this link will be answered.
                 sources.requests.clear();
-                sources.responses.clear();
-                // Server-side-observed state is no longer valid.
-                sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
+                sources.playlists.pending_request = None;
+                sources.playlists.pending_task = None;
+                sources.playlists.stale = false;
+                sources.playlist_tracks.pending_task = None;
+                sources.playlist_tracks.stale = false;
+                if let Some(task_id) = sources.search.task_id {
+                    sources.search.first_page_received = true;
+                    sources.search.mark_completed(task_id);
+                }
                 sources.activity.clear();
                 sources.pending_playlists.clear();
+                // Live server state is gone with the server.
+                sources.server = Default::default();
+                sources.queue = Default::default();
+                // What the user was *browsing* — the playlist list,
+                // the rows of the open playlist, search results, the
+                // detail replies — is the view, and the view is kept:
+                // it stays painted under the server-lost modal, and
+                // it is what a reconnect to the same server resumes
+                // (re-requested fresh, cursor kept by song id). Only
+                // `loaded` flips, so the restore waits for the new
+                // link's playlist list before acting.
+                sources.playlists.loaded = false;
             }
         }
     }

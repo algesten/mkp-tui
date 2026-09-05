@@ -97,10 +97,10 @@ pub fn history_forward(sources: &mut Sources) -> bool {
     true
 }
 
-/// A new connect attempt acknowledges any prior `Closed` state — the
-/// link transitions back to `Idle` so `execute::apply_link` will act
-/// on the fresh intent. Without this, every reconnect after a
-/// disconnect is silently dropped.
+/// A connect attempt the user asked for acknowledges any prior
+/// `Closed` state — the link goes back to `Idle` so `execute::apply_link`
+/// dials right away instead of waiting out the reconnect backoff a
+/// dropped link is otherwise subject to.
 fn ack_closed(link: &mut Link) {
     if link.phase == LinkPhase::Closed {
         link.phase = LinkPhase::Idle;

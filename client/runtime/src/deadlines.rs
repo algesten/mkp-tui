@@ -20,6 +20,8 @@
 
 use std::time::{Duration, Instant};
 
+use mkpclient_state_link::LinkPhase;
+
 use crate::sources::Sources;
 
 /// Cadence for the braille spinner. ~8 Hz reads as a smooth spin
@@ -68,6 +70,28 @@ pub fn nearest_deadline(sources: &Sources) -> Option<Instant> {
             .next_reap_at(mkpclient_state_activity::STALE_TASK_TTL),
     );
 
+    // Reconnect backoff — a dropped link that is still wanted is
+    // dialed again at `closed_at + RECONNECT_DELAY`; the loop has to
+    // be awake for `link_retry_due` to flip.
+    if sources.link.phase == LinkPhase::Closed {
+        consider(
+            &mut soonest,
+            sources
+                .link
+                .closed_at
+                .map(|t| t + crate::execute::RECONNECT_DELAY),
+        );
+    }
+
+    // Failed-probe expiry — same shape; the address becomes eligible
+    // for another probe once the failure ages out.
+    consider(
+        &mut soonest,
+        sources
+            .probes
+            .nearest_retry_at(mkpclient_state_probes::FAILED_PROBE_TTL),
+    );
+
     soonest
 }
 
@@ -77,7 +101,6 @@ pub fn nearest_deadline(sources: &Sources) -> Option<Instant> {
 /// imperatively starts/stops the spinner, the deadline simply
 /// re-derives from sources each tick.
 fn any_spinner_active(sources: &Sources) -> bool {
-    use mkpclient_state_link::LinkPhase;
     if sources.link.phase != LinkPhase::Connected {
         return true;
     }

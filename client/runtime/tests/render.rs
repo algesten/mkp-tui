@@ -13,7 +13,7 @@ use mkproto::Peer;
 /// Total ViewKind variants currently wired through the bridge.
 /// Update this number whenever `ViewKind` (in driver-ui-bridge-core)
 /// gets a new variant + a `push_*` arm in `render::run_render`.
-const TOTAL_VIEW_KINDS: usize = 24;
+const TOTAL_VIEW_KINDS: usize = 25;
 
 #[test]
 fn first_render_pushes_one_per_view_kind() {

@@ -72,6 +72,9 @@ pub enum ViewKind {
     SelectionActionModal = 21,
     ServerLostModal = 22,
     ServerPickerModal = 23,
+
+    // ── Shell: which top-level surface is up ─────────────────────
+    Shell = 24,
 }
 
 impl ViewKind {

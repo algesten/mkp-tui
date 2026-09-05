@@ -38,6 +38,7 @@ mod selection_action_modal;
 mod selection_bar;
 mod server_lost_modal;
 mod server_picker_modal;
+mod shell;
 mod util;
 
 pub use action_modal::{action_modal_model, ActionModalInput, ActionModalModel, ActionModalRow};
@@ -111,3 +112,4 @@ pub use server_lost_modal::{server_lost_modal_model, ServerLostModalInput, Serve
 pub use server_picker_modal::{
     server_picker_modal_model, ServerPickerModalInput, ServerPickerModalModel, ServerPickerRow,
 };
+pub use shell::{shell_model, ShellInput, ShellModel};

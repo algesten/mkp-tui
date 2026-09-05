@@ -41,9 +41,8 @@ mod selection_bar;
 mod server_lost_modal;
 mod server_picker_modal;
 
+use mkpclient_runtime::views::ShellModel;
 use mkpclient_runtime::Runtime;
-use mkpclient_state_link::LinkPhase;
-use mkpclient_state_pairing::PairingPhase;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -195,17 +194,23 @@ pub(super) fn styled_block_spans<'a>(spans: Vec<Span<'a>>) -> Block<'a> {
 pub fn draw(frame: &mut Frame, app: &AppState, rt: &Runtime) {
     let area = frame.area();
 
-    if rt.sources.pairing.phase == PairingPhase::AwaitingConfirmation {
-        let model = mkpclient_runtime::views::pairing_modal_model(
-            mkpclient_runtime::views::PairingModalInput::new(&rt.sources.pairing),
-        );
-        pairing_modal::draw(frame, area, &model);
-        return;
-    }
-
-    if rt.sources.link.phase != LinkPhase::Connected {
-        draw_pre_connect(frame, area, app, rt);
-        return;
+    match mkpclient_runtime::views::shell_model(mkpclient_runtime::views::ShellInput::new(
+        &rt.sources.pairing,
+        &rt.sources.link,
+        &rt.sources.session,
+    )) {
+        ShellModel::Pairing => {
+            let model = mkpclient_runtime::views::pairing_modal_model(
+                mkpclient_runtime::views::PairingModalInput::new(&rt.sources.pairing),
+            );
+            pairing_modal::draw(frame, area, &model);
+            return;
+        }
+        ShellModel::PreConnect => {
+            draw_pre_connect(frame, area, app, rt);
+            return;
+        }
+        ShellModel::Main => {}
     }
 
     draw_main(frame, area, app, rt);

@@ -6,7 +6,7 @@
 //! responses). Closes when the test drops the handle.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -39,6 +39,10 @@ pub struct MockServer {
     /// assertions in scenarios that care about traffic.
     #[allow(dead_code)]
     received: Arc<Mutex<Vec<ClientMsg>>>,
+    /// The socket of the connection currently being served, so a
+    /// test can drop the client from the server side.
+    #[allow(dead_code)]
+    client: Arc<Mutex<Option<TcpStream>>>,
     _handle: JoinHandle<()>,
 }
 
@@ -59,6 +63,8 @@ impl MockServer {
         let addr = listener.local_addr().expect("local_addr");
         let received = Arc::new(Mutex::new(Vec::<ClientMsg>::new()));
         let received_for_thread = received.clone();
+        let client = Arc::new(Mutex::new(None::<TcpStream>));
+        let client_for_thread = client.clone();
         let certs = Arc::new(certs);
 
         let handle = std::thread::spawn(move || {
@@ -70,8 +76,10 @@ impl MockServer {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
+                *client_for_thread.lock().unwrap() = tcp.try_clone().ok();
                 let mut tls = rustls::StreamOwned::new(conn, tcp);
                 handle_connection(&mut tls, &script, &received_for_thread);
+                *client_for_thread.lock().unwrap() = None;
             }
         });
 
@@ -79,6 +87,7 @@ impl MockServer {
             addr,
             certs,
             received,
+            client,
             _handle: handle,
         }
     }
@@ -86,6 +95,16 @@ impl MockServer {
     #[allow(dead_code)]
     pub fn received(&self) -> Vec<ClientMsg> {
         self.received.lock().unwrap().clone()
+    }
+
+    /// Cut the connection currently being served, the way a server
+    /// that quits or a network that blips would. The listener stays
+    /// up, so the runtime can dial again.
+    #[allow(dead_code)]
+    pub fn drop_client(&self) {
+        if let Some(tcp) = self.client.lock().unwrap().as_ref() {
+            let _ = tcp.shutdown(Shutdown::Both);
+        }
     }
 }
 

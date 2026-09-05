@@ -9,13 +9,23 @@
 //!   - [`link_action`] — the diff against the live link source plus
 //!     pre-requisites (probe, creds), returning [`LinkAction`]. The
 //!     trampoline below dispatches each variant to the link driver.
+//!
+//! A link the worker reports `Closed` is just a link that is not
+//! connected: as long as `intent.target` still names a server, the
+//! diff re-dials it. Reconnecting after a drop is therefore emergent
+//! rather than a handler — the only extra rule is a backoff so a
+//! server that refuses us is not hammered every tick. That backoff
+//! is [`link_retry_due`], a query over `link.closed_at` and the
+//! clock (spec § "Time is a source field").
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use imbl::{HashMap as ImHashMap, Vector};
 
 use mkpclient_driver_discovery_core::ServerAd;
 use mkpclient_driver_link_core::LinkCmd;
+use mkpclient_state_clock::Clock;
 use mkpclient_state_credentials::{Credentials, PairingEntry};
 use mkpclient_state_discovery::Discovery;
 use mkpclient_state_intent::Intent;
@@ -25,6 +35,11 @@ use mkpclient_state_probes::{ProbeOutcome, Probes};
 
 use crate::drivers::Drivers;
 use crate::sources::Sources;
+
+/// How long after the worker reports `Closed` before a still-wanted
+/// link is dialed again. Long enough that a refusing server is not
+/// hit every tick, short enough that a blip reads as a pause.
+pub const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 // ─── outputs ────────────────────────────────────────────────────────
 
@@ -83,6 +98,12 @@ impl<'a> IntentInput<'a> {
 #[derive(drv::Input)]
 pub struct LinkStateInput<'a> {
     pub phase_connected: bool,
+    /// Teardown in flight: nothing may be dialed until the worker
+    /// reports `Closed`.
+    pub phase_closing: bool,
+    /// The worker reported the link gone (peer closed, or the dial
+    /// failed). Dialing again is gated by [`link_retry_due`].
+    pub phase_closed: bool,
     pub kind_client: bool,
     pub kind_pairing: bool,
     pub target: Option<&'a std::sync::Arc<str>>,
@@ -92,10 +113,36 @@ impl<'a> LinkStateInput<'a> {
     pub fn new(l: &'a Link) -> Self {
         Self {
             phase_connected: matches!(l.phase, LinkPhase::Connected | LinkPhase::Connecting),
+            phase_closing: matches!(l.phase, LinkPhase::Closing),
+            phase_closed: matches!(l.phase, LinkPhase::Closed),
             kind_client: matches!(l.kind, Some(StateLinkKind::Client)),
             kind_pairing: matches!(l.kind, Some(StateLinkKind::Pairing)),
             target: l.target.as_ref(),
         }
+    }
+}
+
+#[derive(drv::Input)]
+pub struct LinkClosedInput {
+    pub closed_at: Option<Instant>,
+}
+
+impl LinkClosedInput {
+    pub fn new(l: &Link) -> Self {
+        Self {
+            closed_at: l.closed_at,
+        }
+    }
+}
+
+#[derive(drv::Input)]
+pub struct ClockInput {
+    pub now: Instant,
+}
+
+impl ClockInput {
+    pub fn new(c: &Clock) -> Self {
+        Self { now: c.now }
     }
 }
 
@@ -175,19 +222,33 @@ pub fn desired_link<'a>(intent: IntentInput<'a>, pairing: PairingPhaseInput) -> 
     Arc::new(DesiredLink::Closed)
 }
 
+/// "May a closed link be dialed again yet?" — `true` when the link
+/// never closed, or when [`RECONNECT_DELAY`] has passed since it
+/// did. Reads the clock, so it recomputes every tick; its consumer
+/// [`link_action`] only re-fires when the answer flips.
 #[drv::memo(single)]
-pub fn link_action<'a, 'b, 'c, 'd, 'e>(
+pub fn link_retry_due(link: LinkClosedInput, clock: ClockInput) -> bool {
+    match link.closed_at {
+        None => true,
+        Some(closed_at) => clock.now >= closed_at + RECONNECT_DELAY,
+    }
+}
+
+#[drv::memo(single)]
+pub fn link_action<'a, 'b, 'c, 'd>(
     desired: Arc<DesiredLink>,
     link: LinkStateInput<'a>,
+    retry_due: bool,
     discovery: DiscoveryInput<'b>,
     probes: ProbesInput<'c>,
     creds: CredentialsInput<'d>,
     pairing: PairingPhaseInput,
-    intent: IntentInput<'e>,
 ) -> LinkAction {
-    let _ = intent; // intent already projected via `desired`; kept here
-                    // so future tweaks can re-read raw intent without
-                    // a signature churn.
+    if link.phase_closing {
+        // Teardown in flight counts as actual state: the worker
+        // owns the socket until it reports `Closed`.
+        return LinkAction::Noop;
+    }
     match desired.as_ref() {
         DesiredLink::Pairing { server_name } => {
             // Already pairing this exact one? Wait.
@@ -201,6 +262,12 @@ pub fn link_action<'a, 'b, 'c, 'd, 'e>(
             if pairing.awaiting_confirmation && server_name.is_empty() {
                 return LinkAction::Noop;
             }
+            // A pairing handshake that ended is not retried on its
+            // own: the user re-triggers it (dispatch acks `Closed`
+            // back to `Idle` on `BeginPair`).
+            if link.phase_closed {
+                return LinkAction::Noop;
+            }
             // Need an mDNS sighting to know where to dial.
             let Some(ad) = discovery.servers.iter().find(|s| s.name == *server_name) else {
                 return LinkAction::Noop;
@@ -212,20 +279,27 @@ pub fn link_action<'a, 'b, 'c, 'd, 'e>(
             }
         }
         DesiredLink::Client { server_name } => {
-            let Some(ad) = discovery.servers.iter().find(|s| s.name == *server_name) else {
-                return LinkAction::Noop;
-            };
-            let addr = format!("{}:{}", ad.addr, ad.port);
-
             // Already connected as a client (any addr — the legacy
             // didn't track per-addr re-targeting).
             if link.kind_client && link.phase_connected {
                 return LinkAction::Noop;
             }
+            // Dropped: wait out the backoff before dialing again.
+            if link.phase_closed && !retry_due {
+                return LinkAction::Noop;
+            }
+            // Need an mDNS sighting to know where to dial. A server
+            // that is gone from mDNS is simply waited for.
+            let Some(ad) = discovery.servers.iter().find(|s| s.name == *server_name) else {
+                return LinkAction::Noop;
+            };
+            let addr = format!("{}:{}", ad.addr, ad.port);
 
             match probes.by_addr.get(&addr) {
                 None => LinkAction::Probe { addr },
-                Some(ProbeOutcome::InFlight) | Some(ProbeOutcome::Failed(_)) => LinkAction::Noop,
+                Some(ProbeOutcome::InFlight) | Some(ProbeOutcome::Failed { .. }) => {
+                    LinkAction::Noop
+                }
                 Some(ProbeOutcome::Fingerprint(fp)) => {
                     let Some(entry) = creds.entries.get(fp) else {
                         return LinkAction::Noop;
@@ -287,10 +361,6 @@ pub fn run(sources: &mut Sources, drivers: &Drivers) {
 }
 
 fn apply_link(sources: &mut Sources, drivers: &Drivers) {
-    if !matches!(sources.link.phase, LinkPhase::Idle | LinkPhase::Connected) {
-        return;
-    }
-
     // If the user asked to connect to a server but its probe already
     // revealed a fingerprint we have no creds for, transparently swap
     // the intent over to pairing — the picker's Enter binding routes
@@ -302,14 +372,18 @@ fn apply_link(sources: &mut Sources, drivers: &Drivers) {
         IntentInput::new(&sources.intent),
         PairingPhaseInput::new(&sources.pairing),
     );
+    let retry_due = link_retry_due(
+        LinkClosedInput::new(&sources.link),
+        ClockInput::new(&sources.clock),
+    );
     let action = link_action(
         desired,
         LinkStateInput::new(&sources.link),
+        retry_due,
         DiscoveryInput::new(&sources.discovery),
         ProbesInput::new(&sources.probes),
         CredentialsInput::new(&sources.credentials),
         PairingPhaseInput::new(&sources.pairing),
-        IntentInput::new(&sources.intent),
     );
 
     match action {
@@ -460,5 +534,119 @@ mod tests {
 
         assert_eq!(sources.intent.target.as_deref(), Some("Toy Machine"));
         assert!(sources.intent.pair_target.is_none());
+    }
+
+    // ─── reconnect after a drop ─────────────────────────────────────
+
+    /// Sources for a paired client that wants "Toy Machine": the
+    /// server is in mDNS, its probe is cached, and creds match.
+    fn wanted_and_reachable() -> Sources {
+        let mut sources = Sources::default();
+        sources.discovery.upsert(ad("Toy Machine"));
+        sources
+            .probes
+            .set_fingerprint("127.0.0.1:4242".into(), "fp-x".into());
+        sources.credentials.insert(entry("fp-x"));
+        sources.intent.target = Some(Arc::from("Toy Machine"));
+        sources
+    }
+
+    fn action(sources: &Sources) -> LinkAction {
+        let desired = desired_link(
+            IntentInput::new(&sources.intent),
+            PairingPhaseInput::new(&sources.pairing),
+        );
+        let retry_due = link_retry_due(
+            LinkClosedInput::new(&sources.link),
+            ClockInput::new(&sources.clock),
+        );
+        link_action(
+            desired,
+            LinkStateInput::new(&sources.link),
+            retry_due,
+            DiscoveryInput::new(&sources.discovery),
+            ProbesInput::new(&sources.probes),
+            CredentialsInput::new(&sources.credentials),
+            PairingPhaseInput::new(&sources.pairing),
+        )
+    }
+
+    fn drop_link(sources: &mut Sources) {
+        sources.link.phase = LinkPhase::Closed;
+        sources.link.kind = None;
+        sources.link.closed_at = Some(sources.clock.now);
+    }
+
+    #[test]
+    fn dropped_link_is_not_redialed_before_the_backoff() {
+        let mut sources = wanted_and_reachable();
+        drop_link(&mut sources);
+        assert_eq!(action(&sources), LinkAction::Noop);
+
+        sources
+            .clock
+            .tick(sources.clock.now + RECONNECT_DELAY - Duration::from_millis(1));
+        assert_eq!(action(&sources), LinkAction::Noop);
+    }
+
+    #[test]
+    fn dropped_link_is_redialed_once_the_backoff_has_passed() {
+        let mut sources = wanted_and_reachable();
+        drop_link(&mut sources);
+        sources.clock.tick(sources.clock.now + RECONNECT_DELAY);
+        assert!(matches!(
+            action(&sources),
+            LinkAction::ConnectClient { ref addr, ref fingerprint, .. }
+                if addr == "127.0.0.1:4242" && fingerprint == "fp-x"
+        ));
+    }
+
+    #[test]
+    fn dropped_link_waits_for_the_server_to_reappear_in_mdns() {
+        let mut sources = wanted_and_reachable();
+        drop_link(&mut sources);
+        sources.clock.tick(sources.clock.now + RECONNECT_DELAY);
+        sources.discovery.remove("Toy Machine");
+        assert_eq!(action(&sources), LinkAction::Noop);
+
+        // Back, on a new port: the cached probe is for the old
+        // address, so the new one gets probed first.
+        sources.discovery.upsert(ServerAd {
+            port: 4343,
+            ..ad("Toy Machine")
+        });
+        assert_eq!(
+            action(&sources),
+            LinkAction::Probe {
+                addr: "127.0.0.1:4343".into()
+            }
+        );
+    }
+
+    #[test]
+    fn dropped_link_nobody_wants_stays_down() {
+        let mut sources = wanted_and_reachable();
+        drop_link(&mut sources);
+        sources.clock.tick(sources.clock.now + RECONNECT_DELAY);
+        sources.intent.target = None;
+        assert_eq!(action(&sources), LinkAction::Noop);
+    }
+
+    #[test]
+    fn closing_link_is_left_to_the_worker() {
+        let mut sources = wanted_and_reachable();
+        sources.link.phase = LinkPhase::Closing;
+        sources.link.kind = Some(StateLinkKind::Client);
+        assert_eq!(action(&sources), LinkAction::Noop);
+    }
+
+    #[test]
+    fn ended_pairing_is_not_retried_on_its_own() {
+        let mut sources = Sources::default();
+        sources.discovery.upsert(ad("Toy Machine"));
+        sources.intent.pair_target = Some(Arc::from("Toy Machine"));
+        drop_link(&mut sources);
+        sources.clock.tick(sources.clock.now + RECONNECT_DELAY);
+        assert_eq!(action(&sources), LinkAction::Noop);
     }
 }

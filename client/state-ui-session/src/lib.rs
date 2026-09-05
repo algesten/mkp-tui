@@ -42,6 +42,15 @@ pub struct UiSession {
     /// the auto-restore loop scans for this id and snaps the cursor
     /// once it appears.
     pub pending_cursor_song_id: Option<Arc<str>>,
+    /// Backend (mDNS server name) whose data the current middle-pane
+    /// view — `history.mode`, the loaded playlist id, the cursor —
+    /// was built against. Written when a restore applies; survives a
+    /// disconnect (unlike `backend_name`, which clears). The restore
+    /// lifecycle compares it with the newly connected `backend_name`:
+    /// equal means we are back on the same server, so the in-memory
+    /// view is resumed by re-requesting its data; different means the
+    /// saved view for the new backend is loaded from disk.
+    pub view_backend: Option<Arc<str>>,
 }
 
 impl Default for UiSession {
@@ -54,6 +63,7 @@ impl Default for UiSession {
             auto_restored_view: false,
             backend_name: None,
             pending_cursor_song_id: None,
+            view_backend: None,
         }
     }
 }

@@ -134,6 +134,13 @@ impl Runtime {
         self.sources
             .activity
             .reap_stale(now, mkpclient_state_activity::STALE_TASK_TTL);
+        // A failed probe is held only so it isn't re-fired every
+        // tick; once it ages out the address is probed again, which
+        // is how a server that was advertised before it answered
+        // gets a second look.
+        self.sources
+            .probes
+            .drop_expired_failures(now, mkpclient_state_probes::FAILED_PROBE_TTL);
         ingest::run(&mut self.sources, &self.drivers, &self.peer);
         execute::run(&mut self.sources, &self.drivers);
     }

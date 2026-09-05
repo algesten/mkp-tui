@@ -174,6 +174,11 @@ pub fn desired_cursor_snap<'a>(input: CursorSnapInput<'a>) -> DesiredCursorSnap 
     }
 }
 
+/// Playlist rows arrive as `ListBegin` (which sizes the list with
+/// empty slots) followed by `ListChunk`s that fill them in. A target
+/// that is not in the slots filled so far may still be in a chunk
+/// on its way, so "not found" is only final once every slot has
+/// landed.
 fn find_row_in_optional_arc(rows: &Vector<Option<Arc<Song>>>, target: &str) -> DesiredCursorSnap {
     match rows
         .iter()
@@ -182,6 +187,7 @@ fn find_row_in_optional_arc(rows: &Vector<Option<Arc<Song>>>, target: &str) -> D
         .map(|(i, _)| i)
     {
         Some(row) => DesiredCursorSnap::Found { row },
+        None if rows.iter().any(|slot| slot.is_none()) => DesiredCursorSnap::AwaitRows,
         None => DesiredCursorSnap::NotFound,
     }
 }
@@ -242,5 +248,55 @@ pub fn apply_cursor_snap(sources: &mut Sources) {
         CursorSnapAction::ClearOnly => {
             sources.session.pending_cursor_song_id = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(id: &str) -> Song {
+        Song {
+            id: id.into(),
+            title: id.into(),
+            artist_name: String::new(),
+            album_title: String::new(),
+            duration: 0.0,
+            track_number: None,
+            url: None,
+            artwork_url_small: None,
+            artwork_url_large: None,
+        }
+    }
+
+    #[test]
+    fn playlist_snap_waits_for_the_chunk_that_may_hold_the_target() {
+        // ListBegin sized the list; nothing has landed yet.
+        let mut rows: Vector<Option<Arc<Song>>> = std::iter::repeat_with(|| None).take(3).collect();
+        assert_eq!(
+            find_row_in_optional_arc(&rows, "c"),
+            DesiredCursorSnap::AwaitRows
+        );
+
+        // First chunk landed without the target; more is coming.
+        rows[0] = Some(Arc::new(song("a")));
+        assert_eq!(
+            find_row_in_optional_arc(&rows, "c"),
+            DesiredCursorSnap::AwaitRows
+        );
+
+        // Target landed.
+        rows[2] = Some(Arc::new(song("c")));
+        assert_eq!(
+            find_row_in_optional_arc(&rows, "c"),
+            DesiredCursorSnap::Found { row: 2 }
+        );
+
+        // Everything landed and the target is not there: give up.
+        rows[1] = Some(Arc::new(song("b")));
+        assert_eq!(
+            find_row_in_optional_arc(&rows, "zz"),
+            DesiredCursorSnap::NotFound
+        );
     }
 }
