@@ -457,6 +457,7 @@ mod tests {
         let server = ServerState {
             play: Some(PlayState::default()),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview::default();
         let activity = Activity::default();
@@ -484,6 +485,7 @@ mod tests {
                 repeat: Default::default(),
             }),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview::default();
         let activity = Activity::default();
@@ -526,6 +528,7 @@ mod tests {
                 repeat: Default::default(),
             }),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview {
             song: Some(hovered),
@@ -568,6 +571,7 @@ mod tests {
                 repeat: Default::default(),
             }),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview {
             song: Some(s),
@@ -597,6 +601,7 @@ mod tests {
                 repeat: Default::default(),
             }),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview::default();
         let mut activity = Activity::default();
@@ -639,6 +644,7 @@ mod tests {
                 repeat: mkproto::RepeatMode::All,
             }),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview::default();
         let activity = Activity::default();
@@ -663,6 +669,7 @@ mod tests {
                 repeat: Default::default(),
             }),
             backend: None,
+            built_from: None,
         };
         let preview = UiPreview::default();
         let mut activity = Activity::default();

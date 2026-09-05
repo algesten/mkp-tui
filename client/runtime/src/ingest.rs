@@ -72,10 +72,10 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                     LinkKind::Client => {
                         // Post-connect handshake: identify. The
                         // server answers `Hello` with
-                        // `BackendChanged`, and that reply is what
-                        // starts the session proper — see
-                        // `begin_backend_session`. The execute phase
-                        // picks this up next tick and ships it.
+                        // `BackendChanged`; folding that fact is what
+                        // lets `backend_session` see a backend it
+                        // hasn't built from and start the session.
+                        // The execute phase ships this next tick.
                         sources.requests.push(
                             ClientMsg::Hello {
                                 peer: peer.clone(),
@@ -145,12 +145,12 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
 
 /// Drop every source that describes what the server was showing us.
 ///
-/// Shared by the two events that invalidate it wholesale — the link
-/// closing, and the server swapping backend under a live link — so
-/// the two cannot drift apart. Anything added here must be true of
-/// both: state observed from the server, meaningless once that
-/// server or its catalogue is gone.
-fn reset_server_derived_state(sources: &mut Sources) {
+/// Shared by the two things that invalidate it wholesale — the link
+/// closing, and `backend_session` restarting on a backend it wasn't
+/// built from — so the two cannot drift apart. Anything added here
+/// must be true of both: state observed from the server, meaningless
+/// once that server or its catalogue is gone.
+pub(crate) fn reset_server_derived_state(sources: &mut Sources) {
     sources.requests.clear();
     sources.responses.clear();
     sources.server = Default::default();
@@ -161,62 +161,6 @@ fn reset_server_derived_state(sources: &mut Sources) {
     sources.artist_extras.clear();
     sources.activity.clear();
     sources.pending_playlists.clear();
-}
-
-/// Start a backend session: drop everything derived from the
-/// previous backend and request the new one's world.
-///
-/// This is the single entry point for "a backend session begins",
-/// and both situations that can begin one funnel through it:
-///
-///   - Connect. The server answers `Hello` with `BackendChanged` on
-///     the request's seq (only after the protocol-version check has
-///     passed), so every client that gets past the handshake lands
-///     here exactly once.
-///   - Backend swap. The server broadcasts `BackendChanged` on
-///     seq 0 after resetting play state, queue and caches.
-///
-/// Both therefore reset identically, which is the point: a swap is
-/// a reconnect that skipped the socket. Requesting the world here
-/// rather than on `LinkEvent::Connected` costs one round-trip at
-/// startup and buys a single code path.
-///
-/// Cursors are deliberately left alone — the `cursor_clamp`
-/// lifecycle re-derives them from the (now empty) sources.
-fn begin_backend_session(sources: &mut Sources, backend: &str) {
-    // A swap is a reconnect that skipped the socket, so it drops
-    // exactly what a close drops — including in-flight requests,
-    // whose replies would describe the outgoing backend, and the
-    // optimistic playlist mutations whose confirmations are never
-    // coming.
-    reset_server_derived_state(sources);
-    sources.server.backend = Some(Arc::from(backend));
-
-    // Navigation goes too: `mode` and the back / forward stacks hold
-    // album and artist ids that only the previous backend can
-    // resolve. This runs on reconnect as well — the `Hello` reply is
-    // itself a `BackendChanged` — so the back / forward stacks do not
-    // survive a dropped link. What the user sees is restored from
-    // disk by the restore lifecycle; the stacks behind it are not.
-    sources.history = Default::default();
-
-    // Let the restore lifecycle re-run for the new backend once its
-    // playlists land. Dropping the save-dedup key with it means the
-    // new backend's first view is written even in the unlikely event
-    // that it has the same identity as the outgoing backend's last.
-    sources.session.auto_restored_view = false;
-    sources.persist.last_view_saved_key = None;
-
-    sources.requests.push(ClientMsg::GetState, None);
-    let task_id = sources.requests.alloc_task_id();
-    let seq = sources
-        .requests
-        .push(ClientMsg::GetPlaylists, Some(task_id));
-    // Track this seq so an `Error` reply still flips
-    // `playlists.loaded = true` (with empty items) and is consumed
-    // before the `ErrorModal` lifecycle sees it.
-    sources.playlists.pending_request = Some(seq);
-    sources.playlists.pending_task = Some(task_id);
 }
 
 /// Some response variants carry live state (not just a reply) and
@@ -264,7 +208,9 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
     }
     match &response.msg {
         ServerMsg::BackendChanged { backend } => {
-            begin_backend_session(sources, backend.as_str());
+            // Fold the fact only. `backend_session` diffs it against
+            // `built_from` and restarts the session if they differ.
+            sources.server.backend = Some(Arc::from(backend.as_str()));
             return true;
         }
         ServerMsg::PlaylistCreated { playlist } => {
@@ -345,7 +291,7 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
             sources.server.play = Some(play);
         }
         ServerMsg::BackendChanged { backend } => {
-            begin_backend_session(sources, &backend);
+            sources.server.backend = Some(Arc::from(backend));
         }
         ServerMsg::Playlists { playlists } => {
             sources.playlists.set_all(playlists);
