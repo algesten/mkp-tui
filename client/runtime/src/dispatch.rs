@@ -1832,9 +1832,11 @@ fn server_lost_give_up(sources: &mut Sources, drivers: &Drivers) {
     sources.screen = Screen::NowPlaying;
     // Unconditionally: `intent` is what `apply_link` dials from, and it
     // survives a close. Leaving it set would redial the very server the
-    // user just walked away from, onto the view cleared above. The
-    // phase-guarded `disconnect` used to cover this only because a drop
-    // parked on `Closed`; the link is released to `Idle` now.
+    // user just walked away from. The phase-guarded `disconnect` below
+    // used to be enough only because a drop was a dead end; `Closed`
+    // now reads as "nothing open" and dials like any resting phase, so
+    // clearing intent cannot hang off the phase. `pair_target` is
+    // cleared here too — `disconnect` never touched it.
     sources.intent.target = None;
     sources.intent.pair_target = None;
     if matches!(

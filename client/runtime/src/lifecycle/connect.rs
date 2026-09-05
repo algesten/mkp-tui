@@ -71,11 +71,11 @@ pub struct ConnectLinkInput {
     /// (dropped / refused). Both are "nothing to re-target", which is
     /// what makes a reconnect the same question as a first connect.
     pub nothing_open: bool,
-    /// Has the reconnect backoff lapsed? A dropped link is released
-    /// back to `Idle` immediately (see `lifecycle::link_ack`), so
-    /// idleness alone would redial in the same tick and spin against
-    /// an unreachable server. The runtime sleeps until `retry_at`
-    /// rather than polling for it.
+    /// Is the reconnect backoff still withholding a dial? A dropped
+    /// link comes to rest on `Closed`, which reads as "nothing open" —
+    /// so without this it would redial in the same tick and spin
+    /// against an unreachable server. The runtime sleeps until
+    /// `retry_at` rather than polling for it.
     pub retry_pending: bool,
 }
 
@@ -122,6 +122,26 @@ pub fn desired_connect<'a, 'b>(
         return DesiredConnect::Idle;
     }
 
+    // A lost server outranks the startup preference. `preferred_server`
+    // is seeded once per process from the on-disk `last_server` and is
+    // never updated by the pre-connect picker, so it routinely names a
+    // *different* server than the one the user is actually on — and
+    // reconnecting is a question about the connection that just
+    // dropped, not about which server to open at startup. Ranking it
+    // second would dial "home" when the modal says "Lost connection to
+    // studio", and its `clear_auto_connect: true` would then disarm the
+    // only path that rebuilds intent from `lost_server`.
+    if let Some(name) = session.lost_server {
+        if discovery.servers.iter().any(|s| s.name.as_str() == &**name) {
+            return DesiredConnect::TryConnect {
+                server: name.to_string(),
+                // Left armed so a second drop retries too.
+                clear_auto_connect: false,
+            };
+        }
+        return DesiredConnect::Wait;
+    }
+
     // (a)+(b) Preferred server, with grace.
     if let Some(name) = session.preferred_server {
         let found = discovery.servers.iter().any(|s| s.name.as_str() == &**name);
@@ -135,17 +155,6 @@ pub fn desired_connect<'a, 'b>(
             return DesiredConnect::Wait;
         }
         // Grace expired: fall through to lost / single-server.
-    }
-
-    // (d) Lost-server reconnect.
-    if let Some(name) = session.lost_server {
-        if discovery.servers.iter().any(|s| s.name.as_str() == &**name) {
-            return DesiredConnect::TryConnect {
-                server: name.to_string(),
-                clear_auto_connect: false,
-            };
-        }
-        return DesiredConnect::Wait;
     }
 
     // (c) Single-server first-run, only if no preferred was set.
@@ -249,6 +258,39 @@ mod tests {
                 // would make reconnect a one-shot.
                 clear_auto_connect: false,
             }
+        );
+    }
+
+    /// `preferred_server` is the startup preference, seeded once per
+    /// process from disk and never updated by the pre-connect picker —
+    /// so it routinely names a different server than the one the user
+    /// is on. Reconnecting asks about the connection that dropped, so
+    /// the lost server wins.
+    #[test]
+    fn a_lost_server_outranks_a_stale_startup_preference() {
+        let mut d = Discovery::default();
+        d.upsert(ad("home"));
+        d.upsert(ad("studio"));
+
+        let session = UiSession {
+            auto_connect: true,
+            preferred_server: Some(std::sync::Arc::from("home")),
+            lost_server: Some(std::sync::Arc::from("studio")),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            desired(&session, &d),
+            DesiredConnect::TryConnect {
+                server: "studio".into(),
+                // Must stay armed: `clear_auto_connect: true` would
+                // disarm the only path that rebuilds intent from
+                // `lost_server`, stranding the modal on a runtime that
+                // will never dial again.
+                clear_auto_connect: false,
+            },
+            "reconnect dialled the startup preference instead of the \
+             server the modal says was lost"
         );
     }
 

@@ -87,9 +87,9 @@ pub struct LinkStateInput<'a> {
     pub kind_pairing: bool,
     pub target: Option<&'a std::sync::Arc<str>>,
     /// Is the reconnect backoff still withholding a dial? This is the
-    /// gate that matters: `intent.target` survives a close, so without
-    /// it the tick after the link is released to `Idle` redials at
-    /// once and the backoff governs nothing.
+    /// gate that matters: `intent.target` survives a close and a
+    /// `Closed` link reads as "nothing open", so without it the tick
+    /// after a drop redials at once and the backoff governs nothing.
     pub retry_pending: bool,
 }
 
