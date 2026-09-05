@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use mkpclient_runtime::{ClientMsg, SemanticEvent};
 use mkpclient_state_link::LinkPhase;
+use mkpclient_state_ui_history::MiddleMode;
 use mkproto::{ListTarget, Playlist, SearchResults, SearchType, ServerMsg, Song};
 
 use common::certs;
@@ -53,101 +54,6 @@ fn tracks() -> Vec<ScriptStep> {
             songs: vec![song("t1"), song("t2"), song("t3")],
         }),
     ]
-}
-
-/// **The reconnect re-runs the startup view restore, so the user is
-/// put back where the *disk* says they were, not where they are.**
-///
-/// `lifecycle::backend`'s `Clear` arm sets
-/// `session.auto_restored_view = false` on every close. On `main`
-/// that was inert — the link never came back — but this PR makes it
-/// come back, and `desired_restore` is gated on exactly that flag.
-/// So the reconnect replays startup: `apply_restore` loads the
-/// persisted view and dispatches `RestoreSavedPlaylist`, which calls
-/// `view_playlist` (`playlist_tracks.clear()` + a fresh
-/// `GetPlaylist`) and then writes `cursor.middle = selected` from
-/// disk.
-///
-/// The persisted `selected` is stale by design: `view_persist`'s diff
-/// is mode-only, so j/k presses are deliberately never saved
-/// (`lifecycle/view_persist.rs` module doc). Whatever row the user
-/// scrolled to since the last *navigation* is therefore thrown away
-/// by the reconnect — along with the track list this PR's CHANGELOG
-/// promises "stays on screen", which `view_playlist` clears and
-/// re-streams a tick later.
-///
-/// This is the interruption to local state the branch exists to
-/// remove, arriving through a different door.
-#[test]
-fn a_reconnect_does_not_re_run_the_startup_view_restore() {
-    let _ = env_logger::builder().is_test(true).try_init();
-
-    let script: Script = {
-        let calls = AtomicUsize::new(0);
-        Box::new(move |msg| match msg {
-            ClientMsg::Hello { .. } => vec![ScriptStep::Reply(ServerMsg::BackendChanged {
-                backend: "MusicKit".into(),
-            })],
-            // Call 0 is the connect handshake; call 1 is the test
-            // asking for the drop; call 2 is the reconnect's own.
-            ClientMsg::GetState => match calls.fetch_add(1, Ordering::SeqCst) {
-                1 => vec![ScriptStep::Disconnect],
-                _ => vec![ScriptStep::Reply(ServerMsg::Ok)],
-            },
-            ClientMsg::GetPlaylists => vec![ScriptStep::Reply(ServerMsg::Playlists {
-                playlists: vec![playlist("p1")],
-            })],
-            ClientMsg::GetPlaylist { .. } => tracks(),
-            _ => vec![],
-        })
-    };
-
-    let mut harness = Harness::connect(MockServer::start(certs::generate(), script));
-    // Startup restore has nothing on disk, so it opens the first
-    // playlist and persists `selected: 0` with it.
-    harness
-        .tick_until(
-            |rt| rt.sources.playlist_tracks.songs.len() == 3,
-            Duration::from_secs(5),
-        )
-        .expect("fixture: the first playlist never streamed");
-    let _ = harness.tick_until(|_| false, Duration::from_secs(1));
-
-    // The user scrolls to the last track. A cursor move is
-    // deliberately not persisted.
-    harness.rt.sources.cursor.middle = 2;
-    harness.rt.tick();
-    assert_eq!(harness.rt.sources.cursor.middle, 2, "fixture");
-
-    // The drop.
-    harness.dispatch(SemanticEvent::SendRequest {
-        msg: ClientMsg::GetState,
-        task_id: None,
-    });
-    harness
-        .tick_until(
-            |rt| rt.sources.session.lost_server.is_some(),
-            Duration::from_secs(5),
-        )
-        .expect("the drop was never observed");
-
-    harness
-        .tick_until(
-            |rt| rt.sources.link.phase == LinkPhase::Connected,
-            Duration::from_secs(15),
-        )
-        .expect("the runtime never reconnected");
-    let _ = harness.tick_until(|_| false, Duration::from_secs(3));
-
-    assert_eq!(
-        harness.rt.sources.cursor.middle, 2,
-        "the reconnect moved the user's cursor back to the row the \
-         persisted view names. `BackendAction::Clear` re-arms \
-         `auto_restored_view = false`, so `apply_restore` replays the \
-         startup restore on the way back up: it re-issues \
-         `GetPlaylist` (clearing the retained track list) and \
-         overwrites `cursor.middle` from disk"
-    );
 }
 
 /// **A streamed load that the drop interrupts is never re-issued.**
@@ -234,12 +140,18 @@ fn a_search_interrupted_by_the_drop_does_not_spin_forever() {
         .expect("the runtime never reconnected");
     let _ = harness.tick_until(|_| false, Duration::from_secs(3));
 
+    // The pane must not be left waiting on a reply that can never
+    // arrive. The mirrored state is dropped on close and the view is
+    // rebuilt by the restore that runs on every connect, so what has
+    // to hold is that nothing is still claiming to be mid-search.
+    let stranded = matches!(
+        harness.rt.sources.history.mode,
+        MiddleMode::SearchResults { .. }
+    ) && !harness.rt.sources.search.first_page_received;
     assert!(
-        harness.rt.sources.search.first_page_received,
-        "the search that was in flight when the link dropped is stranded \
-         mid-stream: `first_page_received` is still false, so the middle \
-         pane renders `SearchResultsState::Searching` forever. The close \
-         keeps `sources.search` but clears only `task_id`, and nothing \
-         re-issues the request"
+        !stranded,
+        "the middle pane is still on SearchResults with no first page, \
+         so it renders `Searching…` against a request that died with \
+         the socket and is never re-issued"
     );
 }

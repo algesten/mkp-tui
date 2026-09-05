@@ -169,54 +169,6 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 // not to dial.
                 sources.probes.retry_unresolved();
 
-                // In-flight protocol state dies with the socket: these
-                // seqs will never be answered, and optimistic shadows
-                // can no longer be reconciled against a reply.
-                sources.requests.clear();
-                sources.responses.clear();
-                sources.pending_playlists.clear();
-                // Handles correlated against the queues just cleared:
-                // the replies they wait on died with the socket. Left
-                // set, `playlist_tracks.pending_task` keeps
-                // `is_ready()` false (blocking its refetch and pinning
-                // a spinner) and `playlists.pending_request` /
-                // `search.task_id` do the same for theirs. The rows
-                // they describe stay on screen; only the waiting stops.
-                sources.playlists.pending_request = None;
-                sources.playlists.pending_task = None;
-
-                // A stream cut off mid-flight needs more than its
-                // handle dropped: the rows it had already delivered
-                // stay, but something has to either re-issue it or
-                // stop it claiming to be loading, or the pane spins
-                // for the life of the process.
-                //
-                // Track lists have a refetch lifecycle, so mark them
-                // stale and let it re-issue. Clearing `pending_task`
-                // alone would make `is_ready()` true over a half-filled
-                // list, leaving un-arrived rows as permanent
-                // placeholders that nothing would ever fill.
-                if sources.playlist_tracks.pending_task.is_some() {
-                    sources.playlist_tracks.stale = true;
-                }
-                sources.playlist_tracks.pending_task = None;
-
-                if sources.search.task_id.is_some() {
-                    sources.search.stale = true;
-                }
-                sources.search.task_id = None;
-
-                // The queue is the one part of the view that cannot be
-                // retained. `send_queue_chunked` answers the handshake
-                // with the server's *stale* base snapshot plus its
-                // whole delta log — deliberately, see the contract at
-                // `server/src/state.rs` — and that composes correctly
-                // only onto an empty mirror. Kept rows would have the
-                // log applied twice. `Queue::reset` would not save us:
-                // it fires on a changed `queue_id`, which a same-server
-                // reconnect does not have.
-                sources.queue = Default::default();
-
                 // A pairing handshake dies with its socket: the
                 // verification code is derived from that TLS session.
                 // Leaving the phase set would strand every later
@@ -229,23 +181,37 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                     sources.intent.pair_target = None;
                 }
                 sources.link.kind = None;
-                sources.activity.clear();
 
-                // The *rendered* state deliberately survives. A drop is
-                // usually transient — a sleeping laptop, a flaky link —
-                // and the runtime is about to redial the same server,
-                // so wiping the playlists, queue and track list here is
-                // what emptied the screen behind the reconnect modal.
-                // The data is re-fetched on `Connected` and replaced
-                // wholesale; it is discarded eagerly only when the
-                // identity behind it actually changes (a different
-                // backend in `lifecycle::backend`) or when the user
-                // gives up on the server (`server_lost_give_up`).
+                // Everything mirrored from the server goes. Each of
+                // these is re-requested by the reconnect handshake and
+                // the restore that follows it, and none of them can be
+                // resumed in place: the replies they were waiting on
+                // died with the socket, and the queue's own catch-up
+                // is a base snapshot plus a delta log that composes
+                // only onto an empty mirror. Keeping them would mean a
+                // resumption rule per source, each with its own way to
+                // strand a pane mid-stream.
                 //
-                // `server.play` is the exception: playback position
-                // would tick on as though still playing, so the
-                // transport is stopped while the link is down.
-                sources.server.play = None;
+                // What the user keeps is where they were — screen,
+                // cursor, focus, history, filters, selection — none of
+                // which is touched here.
+                sources.requests.clear();
+                sources.responses.clear();
+                sources.server = Default::default();
+                sources.queue = Default::default();
+                sources.playlists = Default::default();
+                sources.playlist_tracks.clear();
+                sources.search.clear();
+                sources.artist_extras.clear();
+                sources.activity.clear();
+                sources.pending_playlists.clear();
+                // The middle-pane history points *at* that data — a
+                // `SearchResults` mode carries the very `task_id` whose
+                // reply just died, so leaving it would render a pane
+                // waiting on results that can never arrive. The restore
+                // that runs on every connect rebuilds the view from the
+                // saved one, so there is nothing here worth keeping.
+                sources.history = Default::default();
             }
         }
     }
@@ -296,20 +262,13 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
     }
     match &response.msg {
         ServerMsg::BackendChanged { backend } => {
-            // The server answers *every* `Hello` with this, so on a
-            // reconnect it arrives naming the backend we were already
-            // on. Only an actual change invalidates anything; treating
-            // the handshake reply as a swap wiped the retained view one
-            // round trip after the link came back, with the modal
-            // already closed.
-            let changed = sources.server.backend.as_deref() != Some(backend.as_str());
             sources.server.backend = Some(Arc::from(backend.as_str()));
-            if changed {
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-            }
+            // Backend initialization / swap invalidates all state
+            // derived from the prior backend.
+            sources.queue = Default::default();
+            sources.playlists = Default::default();
+            sources.playlist_tracks.clear();
+            sources.search.clear();
             return true;
         }
         ServerMsg::Playlists { playlists } => {

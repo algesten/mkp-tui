@@ -91,18 +91,12 @@ impl<'a> BackendIntentInput<'a> {
 #[derive(drv::Input)]
 pub struct BackendNameInput<'a> {
     pub backend_name: Option<&'a std::sync::Arc<str>>,
-    /// The server the retained view belongs to while the link is
-    /// down. A drop no longer empties the screen, so on the way back
-    /// up the runtime has to decide whether that data still describes
-    /// the server it just reached.
-    pub lost_server: Option<&'a std::sync::Arc<str>>,
 }
 
 impl<'a> BackendNameInput<'a> {
     pub fn new(s: &'a UiSession) -> Self {
         Self {
             backend_name: s.backend_name.as_ref(),
-            lost_server: s.lost_server.as_ref(),
         }
     }
 }
@@ -128,14 +122,6 @@ pub enum BackendAction {
     /// + clears `lost_server`.
     Set {
         name: String,
-        /// Discard the view retained across the drop. True when the
-        /// link came back on a *different* server than the one the
-        /// retained playlists / queue / tracks describe — that data
-        /// belongs to a server we are no longer talking to. False for
-        /// a genuine reconnect, where the same server's data is about
-        /// to be refreshed in place and dropping it would blank the
-        /// screen for the duration of the refetch.
-        drop_retained: bool,
     },
     /// Link closed while a backend was active. Trampoline clears
     /// `backend_name` and resets the auto-restored guard.
@@ -186,28 +172,13 @@ pub fn backend_action<'a, 'b>(
     intent: BackendIntentInput<'b>,
 ) -> BackendAction {
     match (desired, current.backend_name) {
-        (DesiredBackend::Connected { name }, None) => {
-            // Coming up from a drop: `lost_server` names whoever the
-            // retained view describes. Same server → a reconnect, keep
-            // it. Anyone else → the data is foreign, drop it.
-            let drop_retained = match current.lost_server {
-                Some(lost) => &**lost != name.as_str(),
-                None => false,
-            };
-            BackendAction::Set {
-                name,
-                drop_retained,
-            }
-        }
+        (DesiredBackend::Connected { name }, None) => BackendAction::Set { name },
         (DesiredBackend::Connected { name }, Some(cur)) if &**cur != name.as_str() => {
             // Different server became connected mid-flight (rare —
             // would mean a transparent re-target). Treat as fresh
             // Set; the previous backend's view-save already happened
             // on its Closed.
-            BackendAction::Set {
-                name,
-                drop_retained: true,
-            }
+            BackendAction::Set { name }
         }
         (DesiredBackend::Disconnected, Some(cur)) => BackendAction::Clear {
             old: cur.to_string(),
@@ -232,36 +203,16 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
     );
     match action {
         BackendAction::Noop => {}
-        BackendAction::Set {
-            name,
-            drop_retained,
-        } => {
-            if drop_retained {
-                // Foreign data from a server we are no longer on —
-                // including `server.backend`, which names the music
-                // backend the retained rows came from.
-                sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
-            }
+        BackendAction::Set { name } => {
             // Sync intent writes first.
             sources.session.backend_name = Some(Arc::from(name.as_str()));
             sources.session.lost_server = None;
-            // Re-run the startup restore only for a *different*
-            // backend. On a reconnect the view is already the one the
-            // user was looking at, and restoring would clear the
-            // retained track list to re-stream it and snap the cursor
-            // to the on-disk `selected` — which `view_persist` writes
-            // only on a mode change, so it is stale by design.
-            if drop_retained {
-                sources.session.auto_restored_view = false;
-            }
-            // Drop the previous backend's saved-key so view-persist
-            // doesn't accidentally write stale `mode` state to the new
-            // backend before restore overwrites it.
+            // Force restore to re-run: the mirrored state was dropped
+            // on close, so the view is rebuilt from the saved one on
+            // every connect. Drop the previous backend's saved-key too
+            // so view-persist doesn't write stale `mode` state to the
+            // new backend before restore overwrites it.
+            sources.session.auto_restored_view = false;
             sources.persist.last_view_saved_key = None;
             sources.persist.last_add_playlist_saved = None;
             sources.persist.last_pushed_search_task = None;
@@ -284,26 +235,9 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
             if lost {
                 sources.session.lost_server = Some(Arc::from(old.as_str()));
                 sources.session.auto_connect = true;
-            } else {
-                // Left, not lost. Nothing is going to reconnect to
-                // `old`, so the rows retained on close describe a
-                // server the user has walked away from — and with
-                // `lost_server` unset, the `drop_retained` check on the
-                // way back up would not catch them.
-                sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
             }
             sources.session.backend_name = None;
-            // A loss keeps the view, so the restore must not re-run on
-            // the way back up. A deliberate close wiped it above, and
-            // a fresh restore is then correct.
-            if !lost {
-                sources.session.auto_restored_view = false;
-            }
+            sources.session.auto_restored_view = false;
             sources.persist.last_view_saved_key = None;
             sources.persist.last_add_playlist_saved = None;
             sources.persist.last_pushed_search_task = None;
@@ -315,10 +249,9 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
 mod tests {
     use super::*;
 
-    fn session(backend: Option<&str>, lost: Option<&str>) -> UiSession {
+    fn session(backend: Option<&str>) -> UiSession {
         UiSession {
             backend_name: backend.map(Arc::from),
-            lost_server: lost.map(Arc::from),
             ..Default::default()
         }
     }
@@ -341,63 +274,8 @@ mod tests {
     }
 
     #[test]
-    fn reconnecting_to_the_same_server_keeps_the_retained_view() {
-        // The drop left `lost_server = tower` and the view painted.
-        // Coming back up on tower, that data is about to be refreshed
-        // in place — dropping it would blank the screen for the length
-        // of the refetch, which is the flicker this avoids.
-        let s = session(None, Some("tower"));
-        assert_eq!(
-            act(
-                DesiredBackend::Connected {
-                    name: "tower".into()
-                },
-                &s
-            ),
-            BackendAction::Set {
-                name: "tower".into(),
-                drop_retained: false,
-            }
-        );
-    }
-
-    #[test]
-    fn landing_on_a_different_server_discards_the_retained_view() {
-        let s = session(None, Some("tower"));
-        assert_eq!(
-            act(
-                DesiredBackend::Connected {
-                    name: "laptop".into()
-                },
-                &s
-            ),
-            BackendAction::Set {
-                name: "laptop".into(),
-                drop_retained: true,
-            }
-        );
-    }
-
-    #[test]
-    fn a_first_connect_has_nothing_to_discard() {
-        let s = session(None, None);
-        assert_eq!(
-            act(
-                DesiredBackend::Connected {
-                    name: "tower".into()
-                },
-                &s
-            ),
-            BackendAction::Set {
-                name: "tower".into(),
-                drop_retained: false,
-            }
-        );
-    }
-
-    #[test]
     fn a_close_clears_the_active_backend() {
-        let s = session(Some("tower"), None);
+        let s = session(Some("tower"));
         assert_eq!(
             act(DesiredBackend::Disconnected, &s),
             BackendAction::Clear {
@@ -407,7 +285,7 @@ mod tests {
         );
         // Nothing was connected — nothing to clear.
         assert_eq!(
-            act(DesiredBackend::Disconnected, &session(None, None)),
+            act(DesiredBackend::Disconnected, &session(None)),
             BackendAction::Noop
         );
     }
@@ -418,7 +296,7 @@ mod tests {
     /// reconnects the user to the server they just walked away from.
     #[test]
     fn a_close_the_user_asked_for_is_not_a_loss() {
-        let s = session(Some("tower"), None);
+        let s = session(Some("tower"));
         assert_eq!(
             act_with(DesiredBackend::Disconnected, &s, &Intent::default()),
             BackendAction::Clear {
