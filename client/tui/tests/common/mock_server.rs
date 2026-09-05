@@ -49,6 +49,19 @@ pub struct MockServer {
 
 impl MockServer {
     pub fn start(certs: TestCerts, script: Script) -> Self {
+        Self::start_inner(None, certs, script)
+    }
+
+    /// Same, but bound to a caller-chosen port. Lets a test model the
+    /// real server restarting on a port a stale probe has already
+    /// failed against — the mkp server takes an OS-assigned port, so
+    /// a restart moves it and the client has to re-probe.
+    #[allow(dead_code)]
+    pub fn start_at(port: u16, certs: TestCerts, script: Script) -> Self {
+        Self::start_inner(Some(port), certs, script)
+    }
+
+    fn start_inner(port: Option<u16>, certs: TestCerts, script: Script) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let cert_der = CertificateDer::from(certs.server_cert_der.clone());
@@ -60,7 +73,7 @@ impl MockServer {
         cfg.alpn_protocols = vec![b"mkp-client".to_vec(), b"mkp-pair".to_vec()];
         let cfg = Arc::new(cfg);
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0))).expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let received = Arc::new(Mutex::new(Vec::<ClientMsg>::new()));
         let received_for_thread = received.clone();
