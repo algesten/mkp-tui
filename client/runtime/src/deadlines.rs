@@ -68,6 +68,13 @@ pub fn nearest_deadline(sources: &Sources) -> Option<Instant> {
             .next_reap_at(mkpclient_state_activity::STALE_TASK_TTL),
     );
 
+    // Reconnect backoff — the loop must be awake at the instant the
+    // next attempt becomes legal, otherwise a dropped link would sit
+    // until some unrelated event happened to wake it. This is what
+    // lets the retry be event-driven instead of a fixed-interval
+    // poll (`EXAMPLE-ARCH.md` § "Wake on event, don't spin").
+    consider(&mut soonest, sources.link.retry_at);
+
     soonest
 }
 

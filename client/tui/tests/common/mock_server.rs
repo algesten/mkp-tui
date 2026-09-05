@@ -28,6 +28,11 @@ pub enum ScriptStep {
     Broadcast(ServerMsg),
     /// Broadcast carrying a task_id (used for SearchMore streaming).
     BroadcastWithTask { task_id: u64, msg: ServerMsg },
+    /// Drop the TLS connection after sending any preceding steps.
+    /// Models a server that goes away mid-session (sleeping laptop,
+    /// network drop). The listener stays bound, so the runtime's
+    /// reconnect finds the same address waiting to accept again.
+    Disconnect,
 }
 
 pub type Script = Box<dyn Fn(&ClientMsg) -> Vec<ScriptStep> + Send + Sync>;
@@ -116,6 +121,7 @@ fn handle_connection(
                     let steps = script(&req.msg);
                     for step in steps {
                         let resp = match step {
+                            ScriptStep::Disconnect => return,
                             ScriptStep::Reply(msg) => Response {
                                 seq: req.seq,
                                 task_id: req.task_id,

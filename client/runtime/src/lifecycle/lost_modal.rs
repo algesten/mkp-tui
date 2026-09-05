@@ -44,14 +44,12 @@ impl<'a> LostServerInput<'a> {
 
 #[derive(drv::Input)]
 pub struct ScreenKindInput {
-    pub on_now_playing: bool,
     pub on_lost_modal: bool,
 }
 
 impl ScreenKindInput {
     pub fn new(s: &Screen) -> Self {
         Self {
-            on_now_playing: matches!(s, Screen::NowPlaying),
             on_lost_modal: matches!(s, Screen::ServerLostModal { .. }),
         }
     }
@@ -91,10 +89,12 @@ pub fn desired_lost_modal<'a>(
 #[drv::memo(single)]
 pub fn lost_modal_action(desired: DesiredLostModal, screen: ScreenKindInput) -> LostModalAction {
     match desired {
-        DesiredLostModal::Show { server } if screen.on_now_playing => {
-            LostModalAction::Open { server }
-        }
-        DesiredLostModal::Show { .. } => LostModalAction::Noop,
+        // Raise it over whatever was on screen. The connection is
+        // gone regardless of which pane or modal the user happened to
+        // be in, and a screen that silently keeps accepting input for
+        // a server that cannot answer is worse than one interrupted.
+        DesiredLostModal::Show { .. } if screen.on_lost_modal => LostModalAction::Noop,
+        DesiredLostModal::Show { server } => LostModalAction::Open { server },
         DesiredLostModal::Hide if screen.on_lost_modal => LostModalAction::Close,
         DesiredLostModal::Hide => LostModalAction::Noop,
     }

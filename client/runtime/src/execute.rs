@@ -284,6 +284,12 @@ pub fn run(sources: &mut Sources, drivers: &Drivers) {
     drivers.clipboard.execute(&mut sources.clipboard);
     crate::lifecycle::clipboard_toast::apply_clipboard_toast(sources, drivers);
     drain_send_queue(sources, drivers);
+    // Last: every observer of `LinkPhase::Closed` has now had its
+    // tick (`apply_backend` cleared the backend, `apply_lost_modal`
+    // raised the modal), so the link is released back to `Idle` and
+    // the reconnect backoff is armed. Running this any earlier would
+    // hide the close from those steps.
+    crate::lifecycle::link_ack::apply_link_ack(sources);
 }
 
 fn apply_link(sources: &mut Sources, drivers: &Drivers) {

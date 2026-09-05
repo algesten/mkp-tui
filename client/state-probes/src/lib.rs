@@ -45,4 +45,40 @@ impl Probes {
     pub fn invalidate(&mut self, addr: &str) {
         self.by_addr.remove(addr);
     }
+
+    /// Drop every `Failed` outcome, keeping fingerprints and in-flight
+    /// probes. A failure only ever means "unreachable at that moment";
+    /// once the runtime is about to retry a connection, holding on to
+    /// it would veto the retry for the rest of the process. Called
+    /// when the reconnect backoff is armed.
+    pub fn retain_non_failed(&mut self) {
+        self.by_addr
+            .retain(|_, v| !matches!(v, ProbeOutcome::Failed(_)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retain_non_failed_drops_only_failures() {
+        let mut p = Probes::default();
+        p.set_fingerprint("good:1".into(), "abc".into());
+        p.mark_in_flight("busy:2".into());
+        p.set_failed("bad:3".into(), "connection refused".into());
+
+        p.retain_non_failed();
+
+        // A failure is a moment-in-time fact about reachability. The
+        // outage that drops a link also fails the probe for the very
+        // address the reconnect needs, so holding on to it would veto
+        // the retry for the rest of the process.
+        assert_eq!(p.get("bad:3"), None);
+        assert_eq!(
+            p.get("good:1"),
+            Some(&ProbeOutcome::Fingerprint("abc".into()))
+        );
+        assert_eq!(p.get("busy:2"), Some(&ProbeOutcome::InFlight));
+    }
 }

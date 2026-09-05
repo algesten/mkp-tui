@@ -65,6 +65,7 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                     LinkKind::Pairing => StateLinkKind::Pairing,
                 });
                 sources.link.last_err = None;
+                sources.link.clear_retry();
                 match kind {
                     LinkKind::Pairing => {
                         sources.pairing.phase = PairingPhase::AwaitingResponse;
@@ -146,17 +147,30 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.link.phase = LinkPhase::Closed;
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
+
+                // In-flight protocol state dies with the socket: these
+                // seqs will never be answered, and optimistic shadows
+                // can no longer be reconciled against a reply.
                 sources.requests.clear();
                 sources.responses.clear();
-                // Server-side-observed state is no longer valid.
-                sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
-                sources.activity.clear();
                 sources.pending_playlists.clear();
+                sources.activity.clear();
+
+                // The *rendered* state deliberately survives. A drop is
+                // usually transient — a sleeping laptop, a flaky link —
+                // and the runtime is about to redial the same server,
+                // so wiping the playlists, queue and track list here is
+                // what emptied the screen behind the reconnect modal.
+                // The data is re-fetched on `Connected` and replaced
+                // wholesale; it is discarded eagerly only when the
+                // identity behind it actually changes (a different
+                // backend in `lifecycle::backend`) or when the user
+                // gives up on the server (`server_lost_give_up`).
+                //
+                // `server.play` is the exception: playback position
+                // would tick on as though still playing, so the
+                // transport is stopped while the link is down.
+                sources.server.play = None;
             }
         }
     }

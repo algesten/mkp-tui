@@ -16,6 +16,7 @@ pub mod connect;
 pub mod cursor_clamp;
 pub mod cursor_snap;
 pub mod last_add_persist;
+pub mod link_ack;
 pub mod lost_modal;
 pub mod pending_add;
 pub mod playlists_refetch;

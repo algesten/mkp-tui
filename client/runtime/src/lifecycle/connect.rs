@@ -68,12 +68,19 @@ impl<'a> ConnectDiscoveryInput<'a> {
 #[derive(drv::Input)]
 pub struct ConnectLinkInput {
     pub idle: bool,
+    /// Has the reconnect backoff lapsed? A dropped link is released
+    /// back to `Idle` immediately (see `lifecycle::link_ack`), so
+    /// idleness alone would redial in the same tick and spin against
+    /// an unreachable server. The runtime sleeps until `retry_at`
+    /// rather than polling for it.
+    pub retry_allowed: bool,
 }
 
 impl ConnectLinkInput {
-    pub fn new(l: &Link) -> Self {
+    pub fn new(l: &Link, now: std::time::Instant) -> Self {
         Self {
             idle: matches!(l.phase, LinkPhase::Idle),
+            retry_allowed: l.retry_allowed(now),
         }
     }
 }
@@ -152,7 +159,7 @@ pub fn desired_connect<'a, 'b>(
 
 #[drv::memo(single)]
 pub fn connect_action(desired: DesiredConnect, link: ConnectLinkInput) -> ConnectAction {
-    if !link.idle {
+    if !link.idle || !link.retry_allowed {
         return ConnectAction::Noop;
     }
     match desired {
@@ -174,7 +181,10 @@ pub fn apply_connect(sources: &mut Sources) {
         ConnectSessionInput::new(&sources.session),
         ConnectDiscoveryInput::new(&sources.discovery),
     );
-    let action = connect_action(desired, ConnectLinkInput::new(&sources.link));
+    let action = connect_action(
+        desired,
+        ConnectLinkInput::new(&sources.link, sources.clock.now),
+    );
     let ConnectAction::Connect {
         server,
         clear_auto_connect,
@@ -188,5 +198,121 @@ pub fn apply_connect(sources: &mut Sources) {
     sources.intent.pair_target = None;
     if clear_auto_connect {
         sources.session.auto_connect = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::net::Ipv4Addr;
+    use std::time::Instant;
+
+    use mkpclient_state_link::LinkPhase;
+
+    fn ad(name: &str) -> ServerAd {
+        ServerAd {
+            name: name.into(),
+            host: format!("{name}.local"),
+            addr: Ipv4Addr::LOCALHOST,
+            port: 6000,
+        }
+    }
+
+    fn desired(session: &UiSession, discovery: &Discovery) -> DesiredConnect {
+        desired_connect(
+            ConnectSessionInput::new(session),
+            ConnectDiscoveryInput::new(discovery),
+        )
+    }
+
+    /// The reconnect case: a server we lost, back in mDNS, with
+    /// `auto_connect` re-armed by `lifecycle::backend`.
+    fn lost_session(name: &str) -> UiSession {
+        UiSession {
+            auto_connect: true,
+            lost_server: Some(std::sync::Arc::from(name)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_lost_server_back_in_discovery_is_redialled() {
+        let mut d = Discovery::default();
+        d.upsert(ad("tower"));
+
+        assert_eq!(
+            desired(&lost_session("tower"), &d),
+            DesiredConnect::TryConnect {
+                server: "tower".into(),
+                // Left true so a second drop retries too — clearing it
+                // would make reconnect a one-shot.
+                clear_auto_connect: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_lost_server_still_missing_waits_rather_than_picking_another() {
+        let mut d = Discovery::default();
+        d.upsert(ad("someone-else"));
+        assert_eq!(desired(&lost_session("tower"), &d), DesiredConnect::Wait);
+    }
+
+    #[test]
+    fn an_idle_link_past_its_backoff_connects() {
+        let t0 = Instant::now();
+        let mut d = Discovery::default();
+        d.upsert(ad("tower"));
+        let want = desired(&lost_session("tower"), &d);
+
+        let mut link = Link {
+            phase: LinkPhase::Idle,
+            ..Default::default()
+        };
+        assert!(matches!(
+            connect_action(want.clone(), ConnectLinkInput::new(&link, t0)),
+            ConnectAction::Connect { .. }
+        ));
+
+        // Backoff pending: the answer is "not yet", not "never". The
+        // loop sleeps to `retry_at` (folded into `nearest_deadline`)
+        // instead of asking again on a timer.
+        link.schedule_retry(t0);
+        assert_eq!(
+            connect_action(want.clone(), ConnectLinkInput::new(&link, t0)),
+            ConnectAction::Noop
+        );
+
+        let after = link.retry_at.unwrap();
+        assert!(matches!(
+            connect_action(want, ConnectLinkInput::new(&link, after)),
+            ConnectAction::Connect { .. }
+        ));
+    }
+
+    #[test]
+    fn a_link_that_is_not_idle_is_left_alone() {
+        let t0 = Instant::now();
+        let mut d = Discovery::default();
+        d.upsert(ad("tower"));
+        let want = desired(&lost_session("tower"), &d);
+
+        for phase in [
+            LinkPhase::Connecting,
+            LinkPhase::Connected,
+            LinkPhase::Closing,
+            LinkPhase::Closed,
+        ] {
+            let link = Link {
+                phase: phase.clone(),
+                ..Default::default()
+            };
+            assert_eq!(
+                connect_action(want.clone(), ConnectLinkInput::new(&link, t0)),
+                ConnectAction::Noop,
+                "{phase:?}"
+            );
+        }
     }
 }

@@ -821,11 +821,17 @@ fn connect_to(sources: &mut Sources, server_name: String) {
     sources.intent.target = Some(Arc::from(server_name));
     sources.intent.pair_target = None;
     ack_closed(&mut sources.link);
+    // The user asked for this one now; a backoff accumulated by
+    // earlier automatic retries must not delay it.
+    sources.link.clear_retry();
+    sources.probes.retain_non_failed();
 }
 
 fn begin_pair(sources: &mut Sources, server_name: String) {
     sources.intent.pair_target = Some(Arc::from(server_name));
     ack_closed(&mut sources.link);
+    sources.link.clear_retry();
+    sources.probes.retain_non_failed();
 }
 
 fn confirm_pair(sources: &mut Sources, drivers: &Drivers) {
@@ -1815,6 +1821,17 @@ fn server_lost_give_up(sources: &mut Sources, drivers: &Drivers) {
     sources.session.lost_server = None;
     sources.session.preferred_server = None;
     sources.session.auto_connect = false;
+    // Giving up is the point at which the retained view stops being
+    // worth keeping: the user is going to pick a different server, so
+    // the old one's playlists / queue / tracks must not bleed into it.
+    // (A plain drop keeps them — see `ingest`'s `LinkEvent::Closed`.)
+    sources.queue = Default::default();
+    sources.playlists = Default::default();
+    sources.playlist_tracks.clear();
+    sources.search.clear();
+    sources.artist_extras.clear();
+    sources.server = Default::default();
+    sources.link.clear_retry();
     sources.screen = Screen::NowPlaying;
     if sources.link.phase != LinkPhase::Idle {
         disconnect(sources, drivers);
