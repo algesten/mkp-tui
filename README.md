@@ -43,14 +43,27 @@ submodule.
 The client is `mkp`. It needs a Make Play server running on a Mac on the
 same network — it discovers one over mDNS and pairs with it.
 
-**Homebrew** (macOS):
+**Homebrew** (macOS and Linux):
 
 ```bash
-brew tap algesten/make-play
-brew install make-play
+brew install algesten/make-play/make-play
 ```
 
 The command it installs is `mkp`.
+
+The fully qualified name matters. Homebrew does not load formulae from
+third-party taps until they are trusted, and installing by full name
+trusts this one formula — nothing else the tap might ever contain. The
+longer route below is equivalent but grants trust to the whole tap:
+
+```bash
+brew tap algesten/make-play
+brew trust algesten/make-play
+brew install make-play
+```
+
+Homebrew predating tap trust has no `trust` command and answers
+`Error: Unknown command: brew trust`; that version does not need it.
 
 **Nix**:
 
