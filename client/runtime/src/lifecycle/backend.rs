@@ -277,6 +277,18 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
             if lost {
                 sources.session.lost_server = Some(Arc::from(old.as_str()));
                 sources.session.auto_connect = true;
+            } else {
+                // Left, not lost. Nothing is going to reconnect to
+                // `old`, so the rows retained on close describe a
+                // server the user has walked away from — and with
+                // `lost_server` unset, the `drop_retained` check on the
+                // way back up would not catch them.
+                sources.server = Default::default();
+                sources.queue = Default::default();
+                sources.playlists = Default::default();
+                sources.playlist_tracks.clear();
+                sources.search.clear();
+                sources.artist_extras.clear();
             }
             sources.session.backend_name = None;
             sources.session.auto_restored_view = false;
@@ -301,7 +313,11 @@ mod tests {
 
     fn act(desired: DesiredBackend, s: &UiSession) -> BackendAction {
         // Default intent: still wanting a server, i.e. a genuine drop.
-        act_with(desired, s, &Intent::default_wanting("tower"))
+        let wanting = Intent {
+            target: Some(Arc::from("tower")),
+            ..Default::default()
+        };
+        act_with(desired, s, &wanting)
     }
 
     fn act_with(desired: DesiredBackend, s: &UiSession, i: &Intent) -> BackendAction {

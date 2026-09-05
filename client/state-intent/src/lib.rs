@@ -14,13 +14,3 @@ pub struct Intent {
     /// Cleared once pairing completes (success or failure).
     pub pair_target: Option<std::sync::Arc<str>>,
 }
-
-impl Intent {
-    /// Test helper: an intent that names `server` as the client target.
-    pub fn default_wanting(server: &str) -> Self {
-        Self {
-            target: Some(std::sync::Arc::from(server)),
-            ..Default::default()
-        }
-    }
-}

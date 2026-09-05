@@ -108,12 +108,21 @@ impl<'a> LinkStateInput<'a> {
 #[derive(drv::Input)]
 pub struct PairingPhaseInput {
     pub awaiting_confirmation: bool,
+    /// A handshake is under way: the verification code is derived from
+    /// the live TLS session, so this one cannot outlive its connection.
+    pub handshake_in_flight: bool,
 }
 
 impl PairingPhaseInput {
     pub fn new(p: &Pairing) -> Self {
         Self {
             awaiting_confirmation: p.phase == PairingPhase::AwaitingConfirmation,
+            handshake_in_flight: matches!(
+                p.phase,
+                PairingPhase::AwaitingResponse
+                    | PairingPhase::AwaitingConfirmation
+                    | PairingPhase::Confirming
+            ),
         }
     }
 }
@@ -205,6 +214,16 @@ pub fn link_action<'a, 'b, 'c, 'd, 'e>(
             }
             // Mid-confirmation placeholder — don't disconnect.
             if pairing.awaiting_confirmation && server_name.is_empty() {
+                return LinkAction::Noop;
+            }
+            // A handshake that has lost its socket is not redialable.
+            // Its code came from that TLS session, so a second dial
+            // would swap the code the user is reading, and confirming
+            // against the new one would persist credentials for an
+            // exchange the server never acknowledged. There is no
+            // pairing link to want here — only a fresh pairing the user
+            // starts themselves.
+            if pairing.handshake_in_flight && !link.phase_connected {
                 return LinkAction::Noop;
             }
             // Backoff still running — hold. The loop is asleep until

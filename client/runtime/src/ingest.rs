@@ -93,6 +93,26 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                         // `ErrorModal` lifecycle sees it.
                         sources.playlists.pending_request = Some(seq);
                         sources.playlists.pending_task = Some(task_id);
+
+                        // The queue survives a drop with its rows *and*
+                        // its `(queue_id, version)` cursor, but the
+                        // server only re-sends the queue when it
+                        // changes — so anything that happened during
+                        // the outage is simply missing, and the next
+                        // `QueueDelta` would be applied by index to a
+                        // list that had moved on. Ask for the gap. A
+                        // queue that was replaced wholesale comes back
+                        // under a new `queue_id`, which resets it.
+                        if let Some(queue_id) = sources.queue.queue_id {
+                            sources.requests.push(
+                                ClientMsg::GetQueueSince {
+                                    queue_id,
+                                    version: sources.queue.version,
+                                    focus: sources.queue.current_index.unwrap_or(0),
+                                },
+                                None,
+                            );
+                        }
                     }
                 }
             }
