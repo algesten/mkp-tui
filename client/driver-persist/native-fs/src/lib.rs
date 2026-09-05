@@ -257,20 +257,45 @@ fn legacy_view_path(key: &ViewKey) -> Option<PathBuf> {
     Some(backend_dir(&key.server)?.join("last_view"))
 }
 
-fn read_view(p: PathBuf) -> Option<mkpclient_driver_persist_core::SavedView> {
+fn read_view(p: &std::path::Path) -> Option<mkpclient_driver_persist_core::SavedView> {
     let text = std::fs::read_to_string(p).ok()?;
     toml::from_str(&text).ok()
 }
 
+/// Take over a view written by a release up to 1.0.0.
+///
+/// That file has no backend dimension, so nothing records which
+/// catalogue it came from. Exactly one backend may inherit it — the
+/// first to ask, which on an upgrade is whichever the server is
+/// already on. Moving it into that backend's directory keeps the
+/// user's place while stopping the next backend from inheriting ids
+/// out of a catalogue it has never heard of.
+fn claim_legacy_view(key: &ViewKey) -> Option<mkpclient_driver_persist_core::SavedView> {
+    let legacy = legacy_view_path(key)?;
+    let view = read_view(&legacy)?;
+    if let Some(dest) = view_path(key) {
+        match toml::to_string(&view)
+            .map_err(|e| e.to_string())
+            .and_then(|text| atomic_write(&dest, text.as_bytes()).map_err(|e| e.to_string()))
+        {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&legacy);
+            }
+            // Return the view anyway — a blank pane helps nobody —
+            // and leave the file for the next run to claim.
+            Err(e) => warn!("could not migrate the 1.0.0 view for {}: {e}", key.server),
+        }
+    }
+    Some(view)
+}
+
 fn load_view(key: &ViewKey) -> Option<mkpclient_driver_persist_core::SavedView> {
-    // Fall back to the pre-1.0.1 server-only file so an upgrade
-    // resumes where the user left off instead of on a blank pane.
-    // The first save writes to the new path; the legacy file is left
-    // alone, since another backend on the same server may still be
-    // the one it was written for.
-    view_path(key)
-        .and_then(read_view)
-        .or_else(|| legacy_view_path(key).and_then(read_view))
+    if let Some(p) = view_path(key) {
+        if let Some(view) = read_view(&p) {
+            return Some(view);
+        }
+    }
+    claim_legacy_view(key)
 }
 
 fn save_view(key: &ViewKey, view: &mkpclient_driver_persist_core::SavedView) -> Result<(), String> {
@@ -283,6 +308,11 @@ fn save_view(key: &ViewKey, view: &mkpclient_driver_persist_core::SavedView) -> 
 
 fn clear_view(key: &ViewKey) {
     if let Some(p) = view_path(key) {
+        let _ = std::fs::remove_file(p);
+    }
+    // Otherwise an unclaimed 1.0.0 view would come straight back on
+    // the next load.
+    if let Some(p) = legacy_view_path(key) {
         let _ = std::fs::remove_file(p);
     }
 }
@@ -346,6 +376,23 @@ fn save_last_add_playlist(backend: &str, playlist_id: &str) -> Result<(), String
     atomic_write(&p.join("last_add_playlist"), playlist_id.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Serialises every test in this binary that touches the process
+/// environment. `std::env::set_var` races *any* concurrent read of
+/// the environment, not just of the same variable — and
+/// `tempfile::tempdir()` reads `TMPDIR` — so the tempdir has to be
+/// created inside the critical section too, not before entering it.
+#[cfg(test)]
+fn with_env_lock<T>(f: impl FnOnce(&tempfile::TempDir) -> T) -> T {
+    use std::sync::{Mutex, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    f(&dir)
+}
+
 #[cfg(test)]
 mod keybinding_tests {
     use super::*;
@@ -353,18 +400,19 @@ mod keybinding_tests {
 
     #[test]
     fn save_then_reload_preserves_binding_and_writes_merged_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keybindings.toml");
-        let mut keys = Keybindings::defaults();
-        keys.replace(KeyContext::Global, Action::PlayPause, KeyChord::char('p'));
-        atomic_write(&path, keys.to_toml().as_bytes()).unwrap();
+        with_env_lock(|dir| {
+            let path = dir.path().join("keybindings.toml");
+            let mut keys = Keybindings::defaults();
+            keys.replace(KeyContext::Global, Action::PlayPause, KeyChord::char('p'));
+            atomic_write(&path, keys.to_toml().as_bytes()).unwrap();
 
-        let loaded = load_keybindings_from(&path);
-        assert_eq!(
-            loaded.keys_for(KeyContext::Global, Action::PlayPause),
-            vec![KeyChord::char('p')]
-        );
-        assert!(std::fs::read_to_string(path).unwrap().contains("move_up"));
+            let loaded = load_keybindings_from(&path);
+            assert_eq!(
+                loaded.keys_for(KeyContext::Global, Action::PlayPause),
+                vec![KeyChord::char('p')]
+            );
+            assert!(std::fs::read_to_string(path).unwrap().contains("move_up"));
+        })
     }
 }
 
@@ -372,18 +420,16 @@ mod keybinding_tests {
 mod view_tests {
     use super::*;
     use mkpclient_driver_persist_core::SavedView;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    /// `config_dir` reads process-global env, so tests pointing it at
-    /// a tempdir have to take turns.
-    fn config_root(dir: &std::path::Path) -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let guard = LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::set_var("MKP_CONFIG_HOME", dir);
-        guard
+    /// Run `f` with `config_dir()` pointed at a fresh tempdir, under
+    /// the binary-wide environment lock.
+    fn with_config_root<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        with_env_lock(|dir| {
+            std::env::set_var("MKP_CONFIG_HOME", dir.path());
+            let out = f(dir.path());
+            std::env::remove_var("MKP_CONFIG_HOME");
+            out
+        })
     }
 
     fn view(playlist_id: &str) -> SavedView {
@@ -404,102 +450,118 @@ mod view_tests {
 
     #[test]
     fn views_of_two_backends_on_one_server_do_not_collide() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _guard = config_root(tmp.path());
+        with_config_root(|root| {
+            let mk = ViewKey::new("living-room", "musickit");
+            let tidal = ViewKey::new("living-room", "tidal");
+            save_view(&mk, &view("mk-playlist")).unwrap();
+            save_view(&tidal, &view("tidal-playlist")).unwrap();
 
-        let mk = ViewKey::new("living-room", "musickit");
-        let tidal = ViewKey::new("living-room", "tidal");
-        save_view(&mk, &view("mk-playlist")).unwrap();
-        save_view(&tidal, &view("tidal-playlist")).unwrap();
+            assert_eq!(playlist_id_of(&load_view(&mk).unwrap()), "mk-playlist");
+            assert_eq!(
+                playlist_id_of(&load_view(&tidal).unwrap()),
+                "tidal-playlist"
+            );
+            assert!(root
+                .join("living-room")
+                .join("musickit")
+                .join("last_view")
+                .exists());
+        })
+    }
 
-        assert_eq!(playlist_id_of(&load_view(&mk).unwrap()), "mk-playlist");
-        assert_eq!(
-            playlist_id_of(&load_view(&tidal).unwrap()),
-            "tidal-playlist"
-        );
-        assert!(tmp
-            .path()
-            .join("living-room")
-            .join("musickit")
-            .join("last_view")
-            .exists());
+    /// Writes a 1.0.0-shaped view: one per server, no backend segment.
+    fn write_legacy_view(root: &std::path::Path, server: &str, playlist_id: &str) -> PathBuf {
+        let legacy = root.join(server).join("last_view");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, toml::to_string(&view(playlist_id)).unwrap()).unwrap();
+        legacy
     }
 
     #[test]
-    fn a_1_0_0_view_is_read_until_the_backend_has_one_of_its_own() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _guard = config_root(tmp.path());
+    fn a_1_0_0_view_is_claimed_by_the_backend_that_reads_it_first() {
+        with_config_root(|root| {
+            let legacy = write_legacy_view(root, "study", "from-1-0-0");
 
-        // What 1.0.0 wrote: one view per server, no backend segment.
-        let legacy = tmp.path().join("study").join("last_view");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, toml::to_string(&view("from-1-0-0")).unwrap()).unwrap();
+            let key = ViewKey::new("study", "musickit");
+            assert_eq!(
+                playlist_id_of(&load_view(&key).unwrap()),
+                "from-1-0-0",
+                "upgrading must not drop the view the user left behind"
+            );
+            assert!(
+                !legacy.exists(),
+                "reading it moves it under the backend that claimed it"
+            );
+            assert!(root
+                .join("study")
+                .join("musickit")
+                .join("last_view")
+                .exists());
 
-        let key = ViewKey::new("study", "musickit");
-        assert_eq!(
-            playlist_id_of(&load_view(&key).unwrap()),
-            "from-1-0-0",
-            "upgrading must not drop the view the user left behind"
-        );
-
-        // Once this backend has saved its own, that wins — and the
-        // legacy file stays put for whichever backend it belonged to.
-        save_view(&key, &view("current")).unwrap();
-        assert_eq!(playlist_id_of(&load_view(&key).unwrap()), "current");
-        assert!(legacy.exists());
+            // And it stays that backend's view from then on.
+            save_view(&key, &view("current")).unwrap();
+            assert_eq!(playlist_id_of(&load_view(&key).unwrap()), "current");
+        })
     }
 
     /// The legacy file has no music-backend dimension, so nothing
     /// records which catalogue it came from. Serving it to *every*
     /// backend that lacks a view of its own re-creates the exact
     /// failure that keying the view by backend exists to prevent: a
-    /// MusicKit album / artist id restored under Tidal, which is "a
-    /// request that could only fail" (commit message of 2604f5a).
+    /// MusicKit album / artist id restored under Tidal, which is a
+    /// request that could only fail.
     ///
     /// The compat requirement is that the upgrade doesn't lose the
     /// user's view — one backend claims it. Handing the same file to
     /// the next backend as well is not compat, it's the bug.
     #[test]
     fn a_1_0_0_view_is_not_handed_to_a_second_backend() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _guard = config_root(tmp.path());
+        with_config_root(|root| {
+            write_legacy_view(root, "hall", "from-1-0-0");
 
-        // A 1.0.0 install: one view per server, no backend segment.
-        let legacy = tmp.path().join("hall").join("last_view");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, toml::to_string(&view("from-1-0-0")).unwrap()).unwrap();
+            // Upgrade. The backend that happened to be live reads the
+            // legacy view and, on the next navigation, writes it under
+            // its own path.
+            let mk = ViewKey::new("hall", "musickit");
+            let migrated = load_view(&mk).expect("the live backend picks the legacy view up");
+            save_view(&mk, &migrated).unwrap();
 
-        // Upgrade. The backend that happened to be live reads the
-        // legacy view and, on the next navigation, writes it under
-        // its own path.
-        let mk = ViewKey::new("hall", "musickit");
-        let migrated = load_view(&mk).expect("the live backend picks the legacy view up");
-        save_view(&mk, &migrated).unwrap();
-
-        // Now the server swaps. Tidal has never had a view here, and
-        // the 1.0.0 file holds ids from a catalogue it cannot resolve.
-        assert!(
-            load_view(&ViewKey::new("hall", "tidal")).is_none(),
-            "a legacy view another backend already claimed must not be \
-             restored under a different backend"
-        );
+            // Now the server swaps. Tidal has never had a view here, and
+            // the 1.0.0 file holds ids from a catalogue it cannot resolve.
+            assert!(
+                load_view(&ViewKey::new("hall", "tidal")).is_none(),
+                "a legacy view another backend already claimed must not be \
+                 restored under a different backend"
+            );
+        })
     }
 
     #[test]
     fn clearing_a_view_leaves_the_other_backend_alone() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _guard = config_root(tmp.path());
+        with_config_root(|_root| {
+            let mk = ViewKey::new("den", "musickit");
+            let tidal = ViewKey::new("den", "tidal");
+            save_view(&mk, &view("mk-playlist")).unwrap();
+            save_view(&tidal, &view("tidal-playlist")).unwrap();
 
-        let mk = ViewKey::new("den", "musickit");
-        let tidal = ViewKey::new("den", "tidal");
-        save_view(&mk, &view("mk-playlist")).unwrap();
-        save_view(&tidal, &view("tidal-playlist")).unwrap();
+            clear_view(&mk);
+            assert!(load_view(&mk).is_none());
+            assert_eq!(
+                playlist_id_of(&load_view(&tidal).unwrap()),
+                "tidal-playlist"
+            );
+        })
+    }
 
-        clear_view(&mk);
-        assert!(load_view(&mk).is_none());
-        assert_eq!(
-            playlist_id_of(&load_view(&tidal).unwrap()),
-            "tidal-playlist"
-        );
+    /// Clearing has to take the unclaimed 1.0.0 file with it, or the
+    /// next load reads it straight back.
+    #[test]
+    fn clearing_a_view_also_drops_an_unclaimed_1_0_0_file() {
+        with_config_root(|root| {
+            write_legacy_view(root, "porch", "from-1-0-0");
+            let key = ViewKey::new("porch", "musickit");
+            clear_view(&key);
+            assert!(load_view(&key).is_none());
+        })
     }
 }

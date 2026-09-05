@@ -137,20 +137,30 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.link.phase = LinkPhase::Closed;
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
-                sources.requests.clear();
-                sources.responses.clear();
-                // Server-side-observed state is no longer valid.
-                sources.server = Default::default();
-                sources.queue = Default::default();
-                sources.playlists = Default::default();
-                sources.playlist_tracks.clear();
-                sources.search.clear();
-                sources.artist_extras.clear();
-                sources.activity.clear();
-                sources.pending_playlists.clear();
+                reset_server_derived_state(sources);
             }
         }
     }
+}
+
+/// Drop every source that describes what the server was showing us.
+///
+/// Shared by the two events that invalidate it wholesale — the link
+/// closing, and the server swapping backend under a live link — so
+/// the two cannot drift apart. Anything added here must be true of
+/// both: state observed from the server, meaningless once that
+/// server or its catalogue is gone.
+fn reset_server_derived_state(sources: &mut Sources) {
+    sources.requests.clear();
+    sources.responses.clear();
+    sources.server = Default::default();
+    sources.queue = Default::default();
+    sources.playlists = Default::default();
+    sources.playlist_tracks.clear();
+    sources.search.clear();
+    sources.artist_extras.clear();
+    sources.activity.clear();
+    sources.pending_playlists.clear();
 }
 
 /// Start a backend session: drop everything derived from the
@@ -174,16 +184,19 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
 /// Cursors are deliberately left alone — the `cursor_clamp`
 /// lifecycle re-derives them from the (now empty) sources.
 fn begin_backend_session(sources: &mut Sources, backend: &str) {
+    // A swap is a reconnect that skipped the socket, so it drops
+    // exactly what a close drops — including in-flight requests,
+    // whose replies would describe the outgoing backend, and the
+    // optimistic playlist mutations whose confirmations are never
+    // coming.
+    reset_server_derived_state(sources);
     sources.server.backend = Some(Arc::from(backend));
 
-    // Everything below is derived from the previous backend's
-    // catalogue and cannot survive the swap. `history` goes too:
-    // its `mode` and back / forward stacks hold album / artist ids
-    // that the new backend has never heard of.
-    sources.queue = Default::default();
-    sources.playlists = Default::default();
-    sources.playlist_tracks.clear();
-    sources.search.clear();
+    // Unlike a close, a swap also discards navigation: `mode` and
+    // the back / forward stacks hold album and artist ids that the
+    // new backend has never heard of. A close keeps them, because
+    // reconnecting to the same backend lands the user back where
+    // they were.
     sources.history = Default::default();
 
     // Let the restore lifecycle re-run for the new backend once its
