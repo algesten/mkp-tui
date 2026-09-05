@@ -138,22 +138,30 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.link.kind = None;
                 sources.link.last_err = error.map(Arc::from);
                 reset_server_derived_state(sources);
+                // Nothing can be sent on a dead link, and the
+                // server-reported facts are gone with it.
+                sources.requests.clear();
+                sources.server = Default::default();
             }
         }
     }
 }
 
-/// Drop every source that describes what the server was showing us.
+/// Drop every source describing the catalogue the server was showing
+/// us.
 ///
 /// Shared by the two things that invalidate it wholesale — the link
 /// closing, and `backend_session` restarting on a backend it wasn't
 /// built from — so the two cannot drift apart. Anything added here
-/// must be true of both: state observed from the server, meaningless
-/// once that server or its catalogue is gone.
+/// must be true of both: catalogue state, meaningless once that
+/// server or its backend is gone.
+///
+/// `server` is deliberately absent. `server.backend` is a fact
+/// ingest owns, and a swap must not blank the frame that announced
+/// it; the close path, where the fact really is gone, clears the
+/// source itself.
 pub(crate) fn reset_server_derived_state(sources: &mut Sources) {
-    sources.requests.clear();
     sources.responses.clear();
-    sources.server = Default::default();
     sources.queue = Default::default();
     sources.playlists = Default::default();
     sources.playlist_tracks.clear();
