@@ -824,14 +824,14 @@ fn connect_to(sources: &mut Sources, server_name: String) {
     // The user asked for this one now; a backoff accumulated by
     // earlier automatic retries must not delay it.
     sources.link.clear_retry();
-    sources.probes.retain_non_failed();
+    sources.probes.retry_unresolved();
 }
 
 fn begin_pair(sources: &mut Sources, server_name: String) {
     sources.intent.pair_target = Some(Arc::from(server_name));
     ack_closed(&mut sources.link);
     sources.link.clear_retry();
-    sources.probes.retain_non_failed();
+    sources.probes.retry_unresolved();
 }
 
 fn confirm_pair(sources: &mut Sources, drivers: &Drivers) {
@@ -1833,7 +1833,17 @@ fn server_lost_give_up(sources: &mut Sources, drivers: &Drivers) {
     sources.server = Default::default();
     sources.link.clear_retry();
     sources.screen = Screen::NowPlaying;
-    if sources.link.phase != LinkPhase::Idle {
+    // Unconditionally: `intent` is what `apply_link` dials from, and it
+    // survives a close. Leaving it set would redial the very server the
+    // user just walked away from, onto the view cleared above. The
+    // phase-guarded `disconnect` used to cover this only because a drop
+    // parked on `Closed`; the link is released to `Idle` now.
+    sources.intent.target = None;
+    sources.intent.pair_target = None;
+    if matches!(
+        sources.link.phase,
+        LinkPhase::Connected | LinkPhase::Connecting
+    ) {
         disconnect(sources, drivers);
     }
 }

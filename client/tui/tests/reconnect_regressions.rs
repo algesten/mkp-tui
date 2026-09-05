@@ -174,14 +174,33 @@ fn a_lapsed_retry_deadline_does_not_swallow_the_fold() {
     rt.sources.session.lost_server = Some(Arc::from("tower"));
     rt.sources.link.retry_at = Some(Instant::now() - Duration::from_secs(1));
 
-    let deadline = mkpclient_runtime::nearest_deadline(&rt.sources)
-        .expect("the spinner alone should keep a deadline pending while disconnected");
-
+    // The harm is the sleep the loop computes, which is what the
+    // `unwrap_or(60s)` produced. A deadline already due must mean
+    // "wake now", never "park for a minute" — otherwise it masks
+    // every live candidate behind it.
     assert!(
-        deadline >= Instant::now(),
-        "nearest_deadline returned an instant that has already passed; \
-         the loop reads that as `unwrap_or(60s)` and parks, masking the \
-         spinner and toast deadlines behind it"
+        rt.next_timeout() < Duration::from_millis(200),
+        "a lapsed deadline made the loop park for {:?}, masking the \
+         spinner and toast deadlines behind it",
+        rt.next_timeout()
+    );
+
+    // And the stale instant does not survive a tick: the per-tick
+    // sweep forgets it, so the fold is not handed a past candidate in
+    // the first place and `retry_pending` keeps meaning "still being
+    // withheld".
+    rt.tick();
+    assert_eq!(
+        rt.sources.link.retry_at, None,
+        "a lapsed backoff survived the tick; while it lingers it is \
+         both a false veto on dialling and the smallest candidate in \
+         nearest_deadline"
+    );
+    let deadline =
+        mkpclient_runtime::nearest_deadline(&rt.sources).expect("the spinner keeps one pending");
+    assert!(
+        deadline >= rt.sources.clock.now,
+        "nearest_deadline still returned an instant that had passed"
     );
 }
 

@@ -82,12 +82,25 @@ impl Link {
         self.retry_attempts = 0;
     }
 
-    /// May a reconnect be attempted at `now`? `None` means no backoff
-    /// is pending.
-    pub fn retry_allowed(&self, now: std::time::Instant) -> bool {
-        match self.retry_at {
-            Some(t) => now >= t,
-            None => true,
+    /// Forget a backoff that has already lapsed. Called once per tick
+    /// from `Runtime::tick`, alongside the other expiry sweeps, so
+    /// that everywhere downstream `retry_at.is_some()` means exactly
+    /// "a retry is still being withheld".
+    ///
+    /// Without this the instant lingers in the past, where it is both
+    /// a false veto on dialling and — as the smallest candidate in
+    /// `nearest_deadline` — able to mask every live deadline behind
+    /// it.
+    pub fn drop_expired_retry(&mut self, now: std::time::Instant) {
+        if matches!(self.retry_at, Some(t) if now >= t) {
+            self.retry_at = None;
         }
+    }
+
+    /// Is a reconnect currently being withheld by the backoff?
+    /// Meaningful only after `drop_expired_retry` has run for this
+    /// tick.
+    pub fn retry_pending(&self) -> bool {
+        self.retry_at.is_some()
     }
 }

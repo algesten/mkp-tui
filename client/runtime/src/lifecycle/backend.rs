@@ -205,7 +205,10 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
             drop_retained,
         } => {
             if drop_retained {
-                // Foreign data from a server we are no longer on.
+                // Foreign data from a server we are no longer on —
+                // including `server.backend`, which names the music
+                // backend the retained rows came from.
+                sources.server = Default::default();
                 sources.queue = Default::default();
                 sources.playlists = Default::default();
                 sources.playlist_tracks.clear();

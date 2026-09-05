@@ -73,14 +73,14 @@ pub struct ConnectLinkInput {
     /// idleness alone would redial in the same tick and spin against
     /// an unreachable server. The runtime sleeps until `retry_at`
     /// rather than polling for it.
-    pub retry_allowed: bool,
+    pub retry_pending: bool,
 }
 
 impl ConnectLinkInput {
-    pub fn new(l: &Link, now: std::time::Instant) -> Self {
+    pub fn new(l: &Link) -> Self {
         Self {
             idle: matches!(l.phase, LinkPhase::Idle),
-            retry_allowed: l.retry_allowed(now),
+            retry_pending: l.retry_pending(),
         }
     }
 }
@@ -159,7 +159,7 @@ pub fn desired_connect<'a, 'b>(
 
 #[drv::memo(single)]
 pub fn connect_action(desired: DesiredConnect, link: ConnectLinkInput) -> ConnectAction {
-    if !link.idle || !link.retry_allowed {
+    if !link.idle || link.retry_pending {
         return ConnectAction::Noop;
     }
     match desired {
@@ -181,10 +181,7 @@ pub fn apply_connect(sources: &mut Sources) {
         ConnectSessionInput::new(&sources.session),
         ConnectDiscoveryInput::new(&sources.discovery),
     );
-    let action = connect_action(
-        desired,
-        ConnectLinkInput::new(&sources.link, sources.clock.now),
-    );
+    let action = connect_action(desired, ConnectLinkInput::new(&sources.link));
     let ConnectAction::Connect {
         server,
         clear_auto_connect,
@@ -271,7 +268,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            connect_action(want.clone(), ConnectLinkInput::new(&link, t0)),
+            connect_action(want.clone(), ConnectLinkInput::new(&link)),
             ConnectAction::Connect { .. }
         ));
 
@@ -280,20 +277,21 @@ mod tests {
         // instead of asking again on a timer.
         link.schedule_retry(t0);
         assert_eq!(
-            connect_action(want.clone(), ConnectLinkInput::new(&link, t0)),
+            connect_action(want.clone(), ConnectLinkInput::new(&link)),
             ConnectAction::Noop
         );
 
-        let after = link.retry_at.unwrap();
+        // The per-tick sweep forgets the lapsed instant, which is what
+        // re-opens the gate.
+        link.drop_expired_retry(link.retry_at.unwrap());
         assert!(matches!(
-            connect_action(want, ConnectLinkInput::new(&link, after)),
+            connect_action(want, ConnectLinkInput::new(&link)),
             ConnectAction::Connect { .. }
         ));
     }
 
     #[test]
     fn a_link_that_is_not_idle_is_left_alone() {
-        let t0 = Instant::now();
         let mut d = Discovery::default();
         d.upsert(ad("tower"));
         let want = desired(&lost_session("tower"), &d);
@@ -309,7 +307,7 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                connect_action(want.clone(), ConnectLinkInput::new(&link, t0)),
+                connect_action(want.clone(), ConnectLinkInput::new(&link)),
                 ConnectAction::Noop,
                 "{phase:?}"
             );

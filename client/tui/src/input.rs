@@ -126,6 +126,16 @@ pub fn translate(ev: UiInput, rt: &mut Runtime, app: &mut AppState) -> bool {
         return false;
     }
 
+    // The reconnect modal owns its keys even though the link is down —
+    // it is shown *instead of* the pre-connect picker, and its legend
+    // ("Enter=pick another · Esc=keep waiting") means nothing if the
+    // picker handler answers instead. Esc there is `DiscoveringQuit`,
+    // which would exit the application.
+    if matches!(rt.sources.screen, Screen::ServerLostModal { .. }) {
+        translate_server_lost_modal(code, mods, rt);
+        return false;
+    }
+
     // Pre-connect: server picker.
     if rt.sources.link.phase != LinkPhase::Connected {
         return translate_picker(code, mods, rt);

@@ -46,14 +46,19 @@ impl Probes {
         self.by_addr.remove(addr);
     }
 
-    /// Drop every `Failed` outcome, keeping fingerprints and in-flight
-    /// probes. A failure only ever means "unreachable at that moment";
-    /// once the runtime is about to retry a connection, holding on to
-    /// it would veto the retry for the rest of the process. Called
+    /// Drop every outcome that is not a usable fingerprint, so the
+    /// next execute-phase probe re-fires for those addresses. Called
     /// when the reconnect backoff is armed.
-    pub fn retain_non_failed(&mut self) {
+    ///
+    /// `Failed` only ever meant "unreachable at that moment", yet
+    /// `link_action` treats it as a permanent veto — so the outage
+    /// that drops a link would otherwise poison the address the
+    /// reconnect needs. `InFlight` is just as stuck: a probe still
+    /// outstanding when the network went away has no result coming,
+    /// and the execute phase refuses to re-fire while it is set.
+    pub fn retry_unresolved(&mut self) {
         self.by_addr
-            .retain(|_, v| !matches!(v, ProbeOutcome::Failed(_)));
+            .retain(|_, v| matches!(v, ProbeOutcome::Fingerprint(_)));
     }
 }
 
@@ -62,13 +67,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retain_non_failed_drops_only_failures() {
+    fn retry_unresolved_keeps_only_usable_fingerprints() {
         let mut p = Probes::default();
         p.set_fingerprint("good:1".into(), "abc".into());
         p.mark_in_flight("busy:2".into());
         p.set_failed("bad:3".into(), "connection refused".into());
 
-        p.retain_non_failed();
+        p.retry_unresolved();
 
         // A failure is a moment-in-time fact about reachability. The
         // outage that drops a link also fails the probe for the very
@@ -79,6 +84,8 @@ mod tests {
             p.get("good:1"),
             Some(&ProbeOutcome::Fingerprint("abc".into()))
         );
-        assert_eq!(p.get("busy:2"), Some(&ProbeOutcome::InFlight));
+        // An in-flight probe whose worker died with the network never
+        // resolves, and blocks a re-probe for as long as it is set.
+        assert_eq!(p.get("busy:2"), None);
     }
 }

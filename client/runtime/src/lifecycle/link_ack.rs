@@ -41,18 +41,26 @@ impl AckLinkInput {
     }
 }
 
-/// Do we still want to be connected to something? A close that leaves
-/// a target behind earns a retry; one the user asked for (give-up,
-/// explicit disconnect) clears both and does not.
+/// The three breadcrumbs that say a connection is still wanted.
+/// Projected raw — the memo decides what they mean
+/// (`EXAMPLE-ARCH.md` § "Input construction does no work").
+///
+/// `pair_target` counts: it survives a close exactly as `target` does,
+/// so a pairing link that drops is redialled by `apply_link` on the
+/// next tick and needs the same throttle.
 #[derive(drv::Input)]
-pub struct AckWantInput {
-    pub wants_connection: bool,
+pub struct AckWantInput<'a> {
+    pub lost_server: Option<&'a std::sync::Arc<str>>,
+    pub target: Option<&'a std::sync::Arc<str>>,
+    pub pair_target: Option<&'a std::sync::Arc<str>>,
 }
 
-impl AckWantInput {
-    pub fn new(s: &UiSession, i: &Intent) -> Self {
+impl<'a> AckWantInput<'a> {
+    pub fn new(s: &'a UiSession, i: &'a Intent) -> Self {
         Self {
-            wants_connection: s.lost_server.is_some() || i.target.is_some(),
+            lost_server: s.lost_server.as_ref(),
+            target: i.target.as_ref(),
+            pair_target: i.pair_target.as_ref(),
         }
     }
 }
@@ -80,12 +88,12 @@ pub enum AckAction {
 }
 
 #[drv::memo(single)]
-pub fn desired_ack(link: AckLinkInput, want: AckWantInput) -> DesiredAck {
+pub fn desired_ack<'a>(link: AckLinkInput, want: AckWantInput<'a>) -> DesiredAck {
     if !link.closed {
         return DesiredAck::Hold;
     }
     DesiredAck::Release {
-        retry: want.wants_connection,
+        retry: want.lost_server.is_some() || want.target.is_some() || want.pair_target.is_some(),
     }
 }
 
@@ -120,7 +128,7 @@ pub fn apply_link_ack(sources: &mut Sources) {
         // this the very outage that dropped the link would poison the
         // address it needs to dial back. Successful fingerprints and
         // in-flight probes stay — only the failures are retried.
-        sources.probes.retain_non_failed();
+        sources.probes.retry_unresolved();
     } else {
         sources.link.clear_retry();
     }
@@ -221,21 +229,31 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_backoff_withholds_permission_until_it_lapses() {
+    fn a_pending_backoff_is_withheld_until_it_lapses() {
         let t0 = Instant::now();
         let mut link = Link::default();
-        assert!(link.retry_allowed(t0), "no backoff means always allowed");
+        assert!(!link.retry_pending(), "no backoff means nothing withheld");
 
         link.schedule_retry(t0);
         let wait = RETRY_BACKOFF[0];
-        assert!(!link.retry_allowed(t0));
-        assert!(!link.retry_allowed(t0 + wait - Duration::from_millis(1)));
-        assert!(link.retry_allowed(t0 + wait));
+        assert!(link.retry_pending());
+
+        // Still early: the sweep leaves it alone.
+        link.drop_expired_retry(t0 + wait - Duration::from_millis(1));
+        assert!(link.retry_pending());
+
+        // Lapsed: the sweep forgets it, so `retry_pending` means
+        // exactly "still being withheld" everywhere downstream, and
+        // no stale instant is left to poison `nearest_deadline`.
+        link.drop_expired_retry(t0 + wait);
+        assert!(!link.retry_pending());
+        assert_eq!(link.retry_at, None);
 
         // A successful connect wipes the schedule, so the next drop
         // starts again at the shortest delay rather than the ceiling.
+        link.schedule_retry(t0);
         link.clear_retry();
-        assert!(link.retry_allowed(t0));
+        assert!(!link.retry_pending());
         link.schedule_retry(t0);
         assert_eq!(link.retry_at, Some(t0 + RETRY_BACKOFF[0]));
     }

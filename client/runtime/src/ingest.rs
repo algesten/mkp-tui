@@ -154,6 +154,17 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 sources.requests.clear();
                 sources.responses.clear();
                 sources.pending_playlists.clear();
+                // Handles correlated against the queues just cleared:
+                // the replies they wait on died with the socket. Left
+                // set, `playlist_tracks.pending_task` keeps
+                // `is_ready()` false (blocking its refetch and pinning
+                // a spinner) and `playlists.pending_request` /
+                // `search.task_id` do the same for theirs. The rows
+                // they describe stay on screen; only the waiting stops.
+                sources.playlist_tracks.pending_task = None;
+                sources.playlists.pending_request = None;
+                sources.playlists.pending_task = None;
+                sources.search.task_id = None;
                 sources.activity.clear();
 
                 // The *rendered* state deliberately survives. A drop is

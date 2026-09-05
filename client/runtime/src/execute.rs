@@ -86,6 +86,11 @@ pub struct LinkStateInput<'a> {
     pub kind_client: bool,
     pub kind_pairing: bool,
     pub target: Option<&'a std::sync::Arc<str>>,
+    /// Is the reconnect backoff still withholding a dial? This is the
+    /// gate that matters: `intent.target` survives a close, so without
+    /// it the tick after the link is released to `Idle` redials at
+    /// once and the backoff governs nothing.
+    pub retry_pending: bool,
 }
 
 impl<'a> LinkStateInput<'a> {
@@ -95,6 +100,7 @@ impl<'a> LinkStateInput<'a> {
             kind_client: matches!(l.kind, Some(StateLinkKind::Client)),
             kind_pairing: matches!(l.kind, Some(StateLinkKind::Pairing)),
             target: l.target.as_ref(),
+            retry_pending: l.retry_pending(),
         }
     }
 }
@@ -201,6 +207,11 @@ pub fn link_action<'a, 'b, 'c, 'd, 'e>(
             if pairing.awaiting_confirmation && server_name.is_empty() {
                 return LinkAction::Noop;
             }
+            // Backoff still running — hold. The loop is asleep until
+            // `retry_at`, so this is a wait, not a spin.
+            if link.retry_pending {
+                return LinkAction::Noop;
+            }
             // Need an mDNS sighting to know where to dial.
             let Some(ad) = discovery.servers.iter().find(|s| s.name == *server_name) else {
                 return LinkAction::Noop;
@@ -220,6 +231,13 @@ pub fn link_action<'a, 'b, 'c, 'd, 'e>(
             // Already connected as a client (any addr — the legacy
             // didn't track per-addr re-targeting).
             if link.kind_client && link.phase_connected {
+                return LinkAction::Noop;
+            }
+
+            // Backoff still running — hold. Probing is a TLS connect
+            // too, so it waits with the dial rather than racing ahead
+            // of it.
+            if link.retry_pending {
                 return LinkAction::Noop;
             }
 
