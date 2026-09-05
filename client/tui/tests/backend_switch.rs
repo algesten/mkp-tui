@@ -15,7 +15,8 @@ use common::harness::Harness;
 use common::mock_server;
 use common::mock_server::{MockServer, ScriptStep};
 use mkpclient_runtime::{SemanticEvent, TuiCursorEvent};
-use mkpclient_state_ui_history::MiddleMode;
+use mkpclient_state_link::LinkPhase;
+use mkpclient_state_ui_history::{HistoryFrame, MiddleMode};
 use mkproto::{ClientMsg, PlayState, PlaybackState, Playlist, ServerMsg, Song};
 
 fn playlist(id: &str, track_count: usize) -> Playlist {
@@ -311,5 +312,91 @@ fn switching_backend_drops_the_previous_backends_play_state() {
         "a play state belonging to the outgoing backend must not survive \
          the swap — a close drops it, and a swap is a close that skipped \
          the socket"
+    );
+}
+
+/// `built_from` is the client's record of which catalogue the
+/// sources hold, and `LinkEvent::Closed` throws it away along with
+/// the rest of `ServerState` (`client/runtime/src/ingest.rs`). A
+/// reconnect therefore always reads as `Start`, never `Switch`, and
+/// `apply_backend_session` keeps navigation on `Start`:
+///
+/// ```text
+/// // A reconnect keeps them — it is the same catalogue, and the
+/// // user was mid-journey through it.
+/// ```
+/// (`client/runtime/src/lifecycle/backend_session.rs`)
+///
+/// It is not necessarily the same catalogue. A server that swapped
+/// backend while the link was down — the swap this branch exists to
+/// handle, just observed one round trip later — hands back a
+/// different one, and the fact pair cannot tell the two apart
+/// because the half that would have said so was destroyed on close.
+/// The back / forward stacks keep album and artist ids only the
+/// previous backend can resolve, so the user's next Back lands the
+/// middle pane on an id the server cannot look up. That is exactly
+/// what discarding navigation on `Switch` exists to prevent.
+#[test]
+fn reconnecting_after_the_server_swapped_backend_drops_the_old_navigation() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    // The backend flips without any broadcast: the client is not
+    // connected when it happens.
+    let backend = std::sync::Arc::new(std::sync::Mutex::new("musickit".to_string()));
+    let script_backend = backend.clone();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            let current = script_backend.lock().unwrap().clone();
+            match msg {
+                ClientMsg::Hello { .. } => mock_server::hello_reply_from(&current),
+                ClientMsg::GetState => vec![ScriptStep::Reply(ServerMsg::Ok)],
+                ClientMsg::GetPlaylists => vec![ScriptStep::Reply(ServerMsg::Playlists {
+                    playlists: playlists_for(&current),
+                })],
+                _ => vec![],
+            }
+        }),
+    );
+    let server_name = format!("mock-{}", mock.addr.port());
+
+    let mut h = Harness::connect(mock);
+    h.tick_until(|rt| rt.sources.playlists.loaded, Duration::from_secs(3))
+        .expect("initial playlists to load");
+
+    // The user drilled into an album that only MusicKit can resolve.
+    h.rt.sources.history.back.push(HistoryFrame {
+        mode: MiddleMode::AlbumDetail {
+            album_id: "mk-album".into(),
+            album_title: "Old".into(),
+            awaiting_seq: None,
+        },
+        filter: "".into(),
+        selected: 0,
+    });
+
+    *backend.lock().unwrap() = "tidal".to_string();
+    h.dispatch(SemanticEvent::Disconnect);
+    h.tick_until(
+        |rt| matches!(rt.sources.link.phase, LinkPhase::Closed),
+        Duration::from_secs(5),
+    )
+    .expect("link to close");
+
+    h.dispatch(SemanticEvent::ConnectTo { server_name });
+    h.tick_until(
+        |rt| {
+            rt.sources.server.backend.as_deref() == Some("tidal")
+                && rt.sources.playlists.items.iter().any(|p| p.id == "tidal-1")
+        },
+        Duration::from_secs(5),
+    )
+    .expect("client to reconnect onto the new backend");
+
+    assert!(
+        h.rt.sources.history.back.is_empty() && h.rt.sources.history.forward.is_empty(),
+        "navigation into the previous backend's catalogue survived a reconnect \
+         onto a different one: {:?}",
+        h.rt.sources.history.back
     );
 }

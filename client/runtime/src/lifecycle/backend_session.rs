@@ -187,6 +187,66 @@ mod tests {
         );
     }
 
+    /// The restart discards the queued requests, which describe the
+    /// outgoing catalogue — but never an unshipped `Hello`. The
+    /// server registers its broadcast receivers when it accepts, so
+    /// a swap announced in that window reaches ingest in the same
+    /// drain as `LinkEvent::Connected`, and dropping the handshake
+    /// would leave the server without our identity and skip the
+    /// protocol-version check.
+    ///
+    /// Nothing else in the suite covers this: replacing the retain
+    /// with `requests.clear()` leaves every other test green.
+    #[test]
+    fn a_restart_keeps_an_unshipped_hello_and_drops_the_rest() {
+        let mut sources = Sources::default();
+        sources.server.backend = Some(std::sync::Arc::from("musickit"));
+        sources.requests.push(
+            ClientMsg::Hello {
+                peer: mkproto::Peer {
+                    user: "u".into(),
+                    host: "h".into(),
+                },
+                version: mkproto::PROTOCOL_VERSION,
+            },
+            None,
+        );
+        sources.requests.push(
+            ClientMsg::GetAlbumDetail {
+                id: "album-on-the-outgoing-backend".into(),
+            },
+            None,
+        );
+
+        apply_backend_session(&mut sources);
+
+        let queued: Vec<ClientMsg> = sources
+            .requests
+            .pending
+            .iter()
+            .map(|p| p.msg.clone())
+            .collect();
+        assert!(
+            matches!(queued.first(), Some(ClientMsg::Hello { .. })),
+            "the handshake must survive, and stay in front: {queued:?}"
+        );
+        assert!(
+            !queued
+                .iter()
+                .any(|m| matches!(m, ClientMsg::GetAlbumDetail { .. })),
+            "requests aimed at the outgoing catalogue must go: {queued:?}"
+        );
+        assert!(
+            queued.iter().any(|m| matches!(m, ClientMsg::GetPlaylists)),
+            "the restart must ask for the new backend's world: {queued:?}"
+        );
+        assert_eq!(
+            sources.server.built_from.as_deref(),
+            Some("musickit"),
+            "the sync intent write is what makes the next tick a Noop"
+        );
+    }
+
     /// A redundant `BackendChanged` naming the backend we already
     /// hold is not a transition, so it does nothing — the diff cares
     /// about state, not about frames observed.
