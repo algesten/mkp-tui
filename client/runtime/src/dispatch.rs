@@ -2963,6 +2963,13 @@ pub fn apply_saved_view(sources: &mut Sources, view: SavedView) {
         if !exists {
             if let Some(first_id) = sources.playlists.items.iter().next().map(|p| p.id.clone()) {
                 open_first_playlist(sources, first_id);
+            } else {
+                // The last playlist may have been deleted during the
+                // outage. Preserved rows are no longer a valid view.
+                sources.playlist_tracks.clear();
+                sources.history.mode = MiddleMode::PlaylistSongs;
+                sources.cursor.middle = 0;
+                sources.session.pending_cursor_song_id = None;
             }
             return;
         }

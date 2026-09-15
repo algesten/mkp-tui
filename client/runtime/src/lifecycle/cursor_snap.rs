@@ -69,6 +69,7 @@ pub struct CursorSnapInput<'a> {
     pub search_songs: &'a Vector<Arc<Song>>,
     pub search_albums: &'a Vector<Arc<Album>>,
     pub search_artists: &'a Vector<Arc<Artist>>,
+    pub search_completed: bool,
     /// Album-detail responses are looked up by `awaiting_seq` and
     /// projected as a single Arc — only this one entry matters,
     /// avoiding cache churn from unrelated responses landing.
@@ -97,6 +98,7 @@ impl<'a> CursorSnapInput<'a> {
             search_songs: &search.songs,
             search_albums: &search.albums,
             search_artists: &search.artists,
+            search_completed: search.completed,
             album_resp,
         }
     }
@@ -155,9 +157,21 @@ pub fn desired_cursor_snap<'a>(input: CursorSnapInput<'a>) -> DesiredCursorSnap 
             }
             find_row_in_optional_arc(input.plt_songs, target)
         }
-        ModeProj::SearchSongs => find_row_in_arc(input.search_songs, target, |s| &s.id),
-        ModeProj::SearchAlbums => find_row_in_arc(input.search_albums, target, |a| &a.id),
-        ModeProj::SearchArtists => find_row_in_arc(input.search_artists, target, |a| &a.id),
+        ModeProj::SearchSongs => {
+            find_row_in_arc(input.search_songs, target, input.search_completed, |s| {
+                &s.id
+            })
+        }
+        ModeProj::SearchAlbums => {
+            find_row_in_arc(input.search_albums, target, input.search_completed, |a| {
+                &a.id
+            })
+        }
+        ModeProj::SearchArtists => {
+            find_row_in_arc(input.search_artists, target, input.search_completed, |a| {
+                &a.id
+            })
+        }
         ModeProj::AlbumDetail { .. } => match input.album_resp.as_deref() {
             // Once the AlbumDetail response is in, rows are "ready"
             // even if the songs list is empty — the legacy cleared
@@ -192,13 +206,15 @@ fn find_row_in_optional_arc(rows: &Vector<Option<Arc<Song>>>, target: &str) -> D
     }
 }
 
-fn find_row_in_arc<T, F>(rows: &Vector<Arc<T>>, target: &str, id_of: F) -> DesiredCursorSnap
+fn find_row_in_arc<T, F>(
+    rows: &Vector<Arc<T>>,
+    target: &str,
+    completed: bool,
+    id_of: F,
+) -> DesiredCursorSnap
 where
     F: Fn(&T) -> &String,
 {
-    if rows.is_empty() {
-        return DesiredCursorSnap::AwaitRows;
-    }
     match rows
         .iter()
         .enumerate()
@@ -206,6 +222,7 @@ where
         .map(|(i, _)| i)
     {
         Some(row) => DesiredCursorSnap::Found { row },
+        None if !completed => DesiredCursorSnap::AwaitRows,
         None => DesiredCursorSnap::NotFound,
     }
 }
@@ -267,6 +284,29 @@ mod tests {
             artwork_url_small: None,
             artwork_url_large: None,
         }
+    }
+
+    #[test]
+    fn search_snap_waits_for_completion_before_abandoning_missing_target() {
+        let mut rows = Vector::new();
+        assert_eq!(
+            find_row_in_arc(&rows, "c", false, |s: &Song| &s.id),
+            DesiredCursorSnap::AwaitRows
+        );
+        rows.push_back(Arc::new(song("a")));
+        assert_eq!(
+            find_row_in_arc(&rows, "c", false, |s| &s.id),
+            DesiredCursorSnap::AwaitRows
+        );
+        assert_eq!(
+            find_row_in_arc(&rows, "c", true, |s| &s.id),
+            DesiredCursorSnap::NotFound
+        );
+        rows.clear();
+        assert_eq!(
+            find_row_in_arc(&rows, "c", true, |s| &s.id),
+            DesiredCursorSnap::NotFound
+        );
     }
 
     #[test]
