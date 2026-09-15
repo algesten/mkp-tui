@@ -206,6 +206,23 @@ pub fn apply_backend(sources: &mut Sources, drivers: &Drivers) {
     match action {
         BackendAction::Noop => {}
         BackendAction::Set { name } => {
+            // Preserved rows belong only to the backend that produced
+            // them. A different server starts from its own saved view,
+            // even when its library has no first playlist to open.
+            if sources
+                .session
+                .view_backend
+                .as_deref()
+                .is_some_and(|old| old != name)
+            {
+                sources.playlist_tracks.clear();
+                sources.search.clear();
+                sources.artist_extras.clear();
+                sources.history = Default::default();
+                sources.cursor.middle = 0;
+                sources.session.pending_cursor_song_id = None;
+                sources.session.view_backend = None;
+            }
             // Sync intent writes first.
             sources.session.backend_name = Some(Arc::from(name.as_str()));
             sources.session.lost_server = None;

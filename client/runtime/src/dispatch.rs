@@ -2918,18 +2918,31 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
             term, search_type, ..
         } => {
             let st = queries::search_type_str(*search_type);
-            let song_id = sources
-                .search
-                .songs
-                .get(sources.cursor.middle)
-                .map(|s| s.id.clone())
-                .unwrap_or_default();
+            let selected_id = match search_type {
+                SearchType::Song => sources
+                    .search
+                    .songs
+                    .get(sources.cursor.middle)
+                    .map(|s| &s.id),
+                SearchType::Album => sources
+                    .search
+                    .albums
+                    .get(sources.cursor.middle)
+                    .map(|a| &a.id),
+                SearchType::Artist => sources
+                    .search
+                    .artists
+                    .get(sources.cursor.middle)
+                    .map(|a| &a.id),
+            }
+            .cloned()
+            .unwrap_or_default();
             Some(SavedView::Search {
                 query: term.clone(),
                 search_type: st.into(),
                 selected: sources.cursor.middle,
                 offset: 0,
-                selected_id: song_id,
+                selected_id,
             })
         }
     }
