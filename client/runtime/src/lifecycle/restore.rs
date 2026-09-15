@@ -246,7 +246,23 @@ pub fn apply_restore(sources: &mut Sources, drivers: &Drivers) {
             sources.session.view_backend = Some(Arc::from(backend.as_str()));
             sources.persist.last_view_load = None;
             match dispatch::build_saved_view(sources) {
-                Some(view) => dispatch::apply_saved_view(sources, view),
+                Some(mut view) => {
+                    // Another outage can interrupt the reload before
+                    // its selected row arrives. The pending target is
+                    // still the user's selection, not a placeholder
+                    // or the temporary clamped cursor in partial data.
+                    if let Some(pending) = &sources.session.pending_cursor_song_id {
+                        match &mut view {
+                            SavedView::Playlist { selected_id, .. }
+                            | SavedView::AlbumDetail { selected_id, .. }
+                            | SavedView::Search { selected_id, .. } => {
+                                *selected_id = pending.to_string();
+                            }
+                            SavedView::ArtistDetail { .. } => {}
+                        }
+                    }
+                    dispatch::apply_saved_view(sources, view);
+                }
                 None => {
                     if let Some(id) = first_playlist_id {
                         dispatch::open_first_playlist_pub(sources, id);

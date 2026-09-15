@@ -107,11 +107,15 @@ impl<'a> CursorSnapInput<'a> {
 #[derive(drv::Input)]
 pub struct CursorMiddleInput {
     pub middle: usize,
+    pub visible_rows: Vec<usize>,
 }
 
 impl CursorMiddleInput {
-    pub fn new(c: &Cursor) -> Self {
-        Self { middle: c.middle }
+    pub fn new(c: &Cursor, visible_rows: Vec<usize>) -> Self {
+        Self {
+            middle: c.middle,
+            visible_rows,
+        }
     }
 }
 
@@ -146,10 +150,18 @@ pub enum CursorSnapAction {
 }
 
 #[drv::memo(single)]
-pub fn desired_cursor_snap<'a>(input: CursorSnapInput<'a>) -> DesiredCursorSnap {
+pub fn desired_cursor_snap<'a>(
+    input: CursorSnapInput<'a>,
+    rows_current: bool,
+) -> DesiredCursorSnap {
     let Some(target) = input.pending else {
         return DesiredCursorSnap::NoTarget;
     };
+    if !rows_current {
+        // A close marks interrupted tasks completed, but their partial
+        // rows cannot settle the selection of the next restored view.
+        return DesiredCursorSnap::AwaitRows;
+    }
     match input.mode {
         ModeProj::PlaylistSongs => {
             if input.plt_songs.is_empty() {
@@ -236,10 +248,15 @@ pub fn cursor_snap_action(
         DesiredCursorSnap::NoTarget | DesiredCursorSnap::AwaitRows => CursorSnapAction::Noop,
         DesiredCursorSnap::Unsupported | DesiredCursorSnap::NotFound => CursorSnapAction::ClearOnly,
         DesiredCursorSnap::Found { row } => {
-            if row == cursor.middle {
+            // The data sources use underlying row indexes; the cursor
+            // counts only rows visible through the current filter.
+            let Some(visible_row) = cursor.visible_rows.iter().position(|&i| i == row) else {
+                return CursorSnapAction::ClearOnly;
+            };
+            if visible_row == cursor.middle {
                 CursorSnapAction::ClearOnly
             } else {
-                CursorSnapAction::SnapAndClear { row }
+                CursorSnapAction::SnapAndClear { row: visible_row }
             }
         }
     }
@@ -248,14 +265,24 @@ pub fn cursor_snap_action(
 // ─── trampoline ─────────────────────────────────────────────────────
 
 pub fn apply_cursor_snap(sources: &mut Sources) {
-    let desired = desired_cursor_snap(CursorSnapInput::new(
-        &sources.session,
-        &sources.history,
-        &sources.playlist_tracks,
-        &sources.search,
-        &sources.responses,
-    ));
-    let action = cursor_snap_action(desired, CursorMiddleInput::new(&sources.cursor));
+    let desired = desired_cursor_snap(
+        CursorSnapInput::new(
+            &sources.session,
+            &sources.history,
+            &sources.playlist_tracks,
+            &sources.search,
+            &sources.responses,
+        ),
+        sources.link.phase == mkpclient_state_link::LinkPhase::Connected
+            && sources.session.auto_restored_view,
+    );
+    let action = cursor_snap_action(
+        desired,
+        CursorMiddleInput::new(
+            &sources.cursor,
+            crate::queries::middle_filtered_indices(sources),
+        ),
+    );
     match action {
         CursorSnapAction::Noop => {}
         CursorSnapAction::SnapAndClear { row } => {
@@ -284,6 +311,33 @@ mod tests {
             artwork_url_small: None,
             artwork_url_large: None,
         }
+    }
+
+    #[test]
+    fn interrupted_search_cannot_clear_the_next_reconnects_cursor_target() {
+        let mut sources = Sources::default();
+        sources.history.mode = MiddleMode::SearchResults {
+            term: "song".into(),
+            search_type: SearchType::Song,
+            task_id: Some(1),
+        };
+        sources.search.songs.push_back(Arc::new(song("a")));
+        sources.search.completed = true;
+        sources.session.pending_cursor_song_id = Some(Arc::from("c"));
+        sources.link.phase = mkpclient_state_link::LinkPhase::Closed;
+        apply_cursor_snap(&mut sources);
+        assert_eq!(sources.session.pending_cursor_song_id.as_deref(), Some("c"));
+
+        sources.link.phase = mkpclient_state_link::LinkPhase::Connected;
+        apply_cursor_snap(&mut sources);
+        assert_eq!(sources.session.pending_cursor_song_id.as_deref(), Some("c"));
+
+        sources.session.auto_restored_view = true;
+        sources.search.completed = false;
+        sources.search.songs.push_back(Arc::new(song("c")));
+        apply_cursor_snap(&mut sources);
+        assert_eq!(sources.cursor.middle, 1);
+        assert!(sources.session.pending_cursor_song_id.is_none());
     }
 
     #[test]

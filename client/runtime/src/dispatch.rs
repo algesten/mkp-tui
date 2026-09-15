@@ -2869,13 +2869,14 @@ pub fn save_current_view(sources: &Sources, drivers: &Drivers, backend: String) 
 }
 
 pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
+    let selected_row = queries::middle_filtered_indices(sources)
+        .get(sources.cursor.middle)
+        .copied();
     match &sources.history.mode {
         MiddleMode::PlaylistSongs => {
             let pid = sources.playlist_tracks.playlist_id.clone()?;
-            let song_id = sources
-                .playlist_tracks
-                .songs
-                .get(sources.cursor.middle)
+            let song_id = selected_row
+                .and_then(|row| sources.playlist_tracks.songs.get(row))
                 .and_then(|slot| slot.as_ref())
                 .map(|s| s.id.clone())
                 .unwrap_or_default();
@@ -2893,7 +2894,7 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
         } => {
             let songs = queries::album_detail_songs(*awaiting_seq, sources);
             let song_id = songs
-                .and_then(|s| s.get(sources.cursor.middle).cloned())
+                .and_then(|s| selected_row.and_then(|row| s.get(row).cloned()))
                 .map(|s| s.id)
                 .unwrap_or_default();
             Some(SavedView::AlbumDetail {
@@ -2918,25 +2919,14 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
             term, search_type, ..
         } => {
             let st = queries::search_type_str(*search_type);
-            let selected_id = match search_type {
-                SearchType::Song => sources
-                    .search
-                    .songs
-                    .get(sources.cursor.middle)
-                    .map(|s| &s.id),
-                SearchType::Album => sources
-                    .search
-                    .albums
-                    .get(sources.cursor.middle)
-                    .map(|a| &a.id),
-                SearchType::Artist => sources
-                    .search
-                    .artists
-                    .get(sources.cursor.middle)
-                    .map(|a| &a.id),
-            }
-            .cloned()
-            .unwrap_or_default();
+            let selected_id = selected_row
+                .and_then(|row| match search_type {
+                    SearchType::Song => sources.search.songs.get(row).map(|s| &s.id),
+                    SearchType::Album => sources.search.albums.get(row).map(|a| &a.id),
+                    SearchType::Artist => sources.search.artists.get(row).map(|a| &a.id),
+                })
+                .cloned()
+                .unwrap_or_default();
             Some(SavedView::Search {
                 query: term.clone(),
                 search_type: st.into(),
