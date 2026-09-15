@@ -538,3 +538,134 @@ fn disconnecting_during_a_reconnect_stops_it() {
     let hellos_after = count(&h.mock.received(), |m| matches!(m, ClientMsg::Hello { .. }));
     assert_eq!(hellos_after, hellos_before);
 }
+
+#[test]
+fn reconnect_preserves_album_search_selection_after_delayed_results() {
+    use mkproto::{Album, SearchResults, SearchType};
+    let base = script();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            if matches!(msg, ClientMsg::Search { .. }) {
+                // Let the runtime tick while the resumed search is in flight.
+                std::thread::sleep(Duration::from_millis(150));
+                return vec![ScriptStep::Reply(ServerMsg::Search(
+                    SearchResults::Albums {
+                        albums: (0..3)
+                            .map(|i| Album {
+                                id: format!("album-{i}"),
+                                name: format!("Album {i}"),
+                                artist_id: "artist".into(),
+                                artist_name: "Artist".into(),
+                                track_count: 3,
+                                detail: None,
+                                url: None,
+                                artwork_url_small: None,
+                                artwork_url_large: None,
+                            })
+                            .collect(),
+                    },
+                ))];
+            }
+            base(msg)
+        }),
+    );
+    let mut h = connect_and_browse(mock);
+    h.dispatch(SemanticEvent::RestoreSavedSearch {
+        query: "album".into(),
+        search_type: SearchType::Album,
+        selected: 0,
+        selected_id: None,
+    });
+    h.tick_until(
+        |rt| rt.sources.search.albums.len() == 3,
+        Duration::from_secs(5),
+    )
+    .expect("album results");
+    h.dispatch(TuiCursorEvent::MiddleCursorDown);
+    h.dispatch(TuiCursorEvent::MiddleCursorDown);
+    h.tick_once();
+    assert_eq!(h.rt.sources.cursor.middle, 2);
+    let original_task = h.rt.sources.search.task_id;
+    h.mock.drop_client();
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Closed,
+        Duration::from_secs(5),
+    )
+    .expect("drop observed");
+    h.tick_until(
+        |rt| {
+            rt.sources.link.phase == LinkPhase::Connected
+                && rt.sources.session.auto_restored_view
+                && rt.sources.search.task_id != original_task
+                && rt.sources.search.albums.len() == 3
+        },
+        Duration::from_secs(10),
+    )
+    .expect("album search resumed");
+    assert!(matches!(
+        h.rt.sources.history.mode,
+        MiddleMode::SearchResults {
+            search_type: SearchType::Album,
+            ..
+        }
+    ));
+    assert_eq!(
+        h.rt.sources.cursor.middle, 2,
+        "keep the selected album after reconnect"
+    );
+}
+
+#[test]
+fn switching_to_an_empty_backend_drops_the_previous_backends_rows() {
+    let mut h = connect_and_browse(MockServer::start(certs::generate(), script()));
+    let other = MockServer::start(
+        certs::generate(),
+        Box::new(|msg| match msg {
+            ClientMsg::GetPlaylists => vec![ScriptStep::Reply(ServerMsg::Playlists {
+                playlists: vec![],
+            })],
+            _ => vec![ScriptStep::Reply(ServerMsg::Ok)],
+        }),
+    );
+    let name = format!("mock-{}", other.addr.port());
+    h.rt.sources.discovery.upsert(ServerAd {
+        name: name.clone(),
+        host: "127.0.0.1".into(),
+        addr: std::net::Ipv4Addr::LOCALHOST,
+        port: other.addr.port(),
+    });
+    h.rt.sources
+        .credentials
+        .insert(mkpclient_state_credentials::PairingEntry {
+            fingerprint: other.certs.fingerprint.clone(),
+            host: "127.0.0.1".into(),
+            server_cert_pem: other.certs.server_cert_pem.clone(),
+            client_cert_pem: other.certs.client_cert_pem.clone(),
+            client_key_pem: other.certs.client_key_pem.clone(),
+        });
+    let selected =
+        h.rt.sources
+            .discovery
+            .servers
+            .iter()
+            .position(|s| s.name == name)
+            .unwrap();
+    h.rt.sources.screen = Screen::ServerPicker { selected };
+    h.dispatch(TuiCursorEvent::ServerPickerModalSelect);
+    h.tick_until(
+        |rt| {
+            rt.sources.session.backend_name.as_deref() == Some(name.as_str())
+                && rt.sources.session.auto_restored_view
+                && rt.sources.playlists.loaded
+        },
+        Duration::from_secs(10),
+    )
+    .expect("empty backend connected and restored");
+    assert!(h.rt.sources.playlists.items.is_empty());
+    assert!(
+        h.rt.sources.playlist_tracks.songs.is_empty(),
+        "the new server must not expose the previous server's playable rows"
+    );
+    assert!(h.rt.sources.playlist_tracks.playlist_id.is_none());
+}
