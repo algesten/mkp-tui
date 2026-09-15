@@ -669,3 +669,178 @@ fn switching_to_an_empty_backend_drops_the_previous_backends_rows() {
     );
     assert!(h.rt.sources.playlist_tracks.playlist_id.is_none());
 }
+
+#[test]
+fn reconnect_preserves_artist_detail_selection_after_delayed_results() {
+    let base = script();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            if matches!(msg, ClientMsg::GetArtistDetail { .. }) {
+                std::thread::sleep(Duration::from_millis(150));
+                return vec![ScriptStep::Reply(ServerMsg::ArtistDetail {
+                    artist: mkproto::Artist {
+                        id: "artist".into(),
+                        name: "Artist".into(),
+                        detail: None,
+                        url: None,
+                        artwork_url_small: None,
+                        artwork_url_large: None,
+                    },
+                    top_songs: vec![song("a", "Alpha"), song("b", "Bravo"), song("c", "Charlie")],
+                })];
+            }
+            base(msg)
+        }),
+    );
+    let mut h = connect_and_browse(mock);
+    h.dispatch(SemanticEvent::RestoreSavedArtist {
+        artist_id: "artist".into(),
+        artist_name: "Artist".into(),
+        selected: 0,
+    });
+    let detail_loaded = |rt: &Runtime| match rt.sources.history.mode {
+        MiddleMode::ArtistDetail {
+            awaiting_seq: Some(seq),
+            ..
+        } => matches!(
+            rt.sources.responses.by_seq.get(&seq).map(|r| r.as_ref()),
+            Some(ServerMsg::ArtistDetail { .. })
+        ),
+        _ => false,
+    };
+    h.tick_until(detail_loaded, Duration::from_secs(5))
+        .expect("artist detail loaded");
+    h.dispatch(TuiCursorEvent::MiddleCursorDown);
+    h.dispatch(TuiCursorEvent::MiddleCursorDown);
+    h.tick_once();
+    assert_eq!(h.rt.sources.cursor.middle, 2);
+    let original_mode = h.rt.sources.history.mode.clone();
+    h.mock.drop_client();
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Closed,
+        Duration::from_secs(5),
+    )
+    .expect("drop observed");
+    h.tick_until(
+        |rt| {
+            rt.sources.link.phase == LinkPhase::Connected
+                && rt.sources.session.auto_restored_view
+                && rt.sources.history.mode != original_mode
+                && detail_loaded(rt)
+        },
+        Duration::from_secs(10),
+    )
+    .expect("artist detail resumed");
+    assert_eq!(
+        h.rt.sources.cursor.middle, 2,
+        "keep artist detail selection across reconnect"
+    );
+}
+
+#[test]
+fn reconnect_to_an_emptied_library_discards_deleted_playlist_rows() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let emptied = Arc::new(AtomicBool::new(false));
+    let server_emptied = emptied.clone();
+    let base = script();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            if matches!(msg, ClientMsg::GetPlaylists) && server_emptied.load(Ordering::SeqCst) {
+                return vec![ScriptStep::Reply(ServerMsg::Playlists {
+                    playlists: vec![],
+                })];
+            }
+            base(msg)
+        }),
+    );
+    let mut h = connect_and_browse(mock);
+    emptied.store(true, Ordering::SeqCst);
+    h.mock.drop_client();
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Closed,
+        Duration::from_secs(5),
+    )
+    .expect("drop observed");
+    h.tick_until(
+        |rt| {
+            rt.sources.link.phase == LinkPhase::Connected
+                && rt.sources.session.auto_restored_view
+                && rt.sources.playlists.loaded
+        },
+        Duration::from_secs(10),
+    )
+    .expect("empty library reconnected");
+    assert!(h.rt.sources.playlists.items.is_empty());
+    assert!(
+        h.rt.sources.playlist_tracks.songs.is_empty(),
+        "deleted playlist must not retain playable rows after reconnect"
+    );
+    assert!(h.rt.sources.playlist_tracks.playlist_id.is_none());
+}
+
+#[test]
+fn reconnect_preserves_search_selection_from_a_later_streamed_page() {
+    use mkproto::{SearchResults, SearchType};
+    let base = script();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            if matches!(msg, ClientMsg::Search { .. }) {
+                return vec![
+                    ScriptStep::Reply(ServerMsg::Search(SearchResults::Songs {
+                        songs: vec![song("a", "Alpha"), song("b", "Bravo")],
+                    })),
+                    ScriptStep::Delay(Duration::from_millis(150)),
+                    ScriptStep::BroadcastForRequestTask(ServerMsg::SearchMore(
+                        SearchResults::Songs {
+                            songs: vec![song("c", "Charlie")],
+                        },
+                    )),
+                ];
+            }
+            base(msg)
+        }),
+    );
+    let mut h = connect_and_browse(mock);
+    h.dispatch(SemanticEvent::RestoreSavedSearch {
+        query: "song".into(),
+        search_type: SearchType::Song,
+        selected: 0,
+        selected_id: None,
+    });
+    h.tick_until(
+        |rt| rt.sources.search.songs.len() == 3,
+        Duration::from_secs(5),
+    )
+    .expect("all search pages");
+    h.dispatch(TuiCursorEvent::MiddleCursorDown);
+    h.dispatch(TuiCursorEvent::MiddleCursorDown);
+    h.tick_once();
+    assert_eq!(h.rt.sources.cursor.middle, 2);
+    let original_task = h.rt.sources.search.task_id;
+    h.mock.drop_client();
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Closed,
+        Duration::from_secs(5),
+    )
+    .expect("drop observed");
+    h.tick_until(
+        |rt| {
+            rt.sources.link.phase == LinkPhase::Connected
+                && rt.sources.session.auto_restored_view
+                && rt.sources.search.task_id != original_task
+                && rt.sources.search.songs.len() == 3
+        },
+        Duration::from_secs(10),
+    )
+    .expect("streamed search resumed");
+    assert_eq!(
+        h.rt.sources.cursor.middle, 2,
+        "keep the song selected on a later search page"
+    );
+}

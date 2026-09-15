@@ -24,6 +24,10 @@ pub enum ScriptStep {
     /// Reply directly to a matched `ClientMsg` with the given
     /// response message (sent on the request's seq).
     Reply(ServerMsg),
+    /// Pause between frames to model streamed pages arriving on later ticks.
+    Delay(std::time::Duration),
+    /// Stream a page correlated with the current request.
+    BroadcastForRequestTask(ServerMsg),
     /// Broadcast (seq=0). Sent before processing the next request.
     Broadcast(ServerMsg),
     /// Broadcast carrying a task_id (used for SearchMore streaming).
@@ -150,6 +154,16 @@ fn handle_connection(
                     let steps = script(&req.msg);
                     for step in steps {
                         let resp = match step {
+                            ScriptStep::Delay(delay) => {
+                                let _ = tls.flush();
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            ScriptStep::BroadcastForRequestTask(msg) => Response {
+                                seq: 0,
+                                task_id: req.task_id,
+                                msg,
+                            },
                             ScriptStep::Reply(msg) => Response {
                                 seq: req.seq,
                                 task_id: req.task_id,
