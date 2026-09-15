@@ -48,6 +48,16 @@ pub struct MockServer {
 
 impl MockServer {
     pub fn start(certs: TestCerts, script: Script) -> Self {
+        Self::start_with_rejected_connections(certs, script, 0)
+    }
+
+    /// Accept and close the first connections before serving TLS, as a
+    /// server that is advertised before it is ready might do.
+    pub fn start_with_rejected_connections(
+        certs: TestCerts,
+        script: Script,
+        mut rejected: usize,
+    ) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let cert_der = CertificateDer::from(certs.server_cert_der.clone());
@@ -72,6 +82,11 @@ impl MockServer {
             // Accept a single connection; loop in case the runtime
             // re-connects, but each connection is sequential.
             while let Ok((tcp, _peer)) = listener.accept() {
+                if rejected > 0 {
+                    rejected -= 1;
+                    let _ = tcp.shutdown(Shutdown::Both);
+                    continue;
+                }
                 let conn = match rustls::ServerConnection::new(cfg.clone()) {
                     Ok(c) => c,
                     Err(_) => continue,

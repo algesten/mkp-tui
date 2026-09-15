@@ -39,6 +39,26 @@ impl Harness {
     /// pre-existing pairing credential, and dispatch ConnectTo. Block
     /// until the link reports Connected.
     pub fn connect(mock: MockServer) -> Self {
+        let mut h = Self::prepare(mock);
+        h.dispatch(SemanticEvent::ConnectTo {
+            server_name: h.server_name(),
+        });
+        h.tick_until(
+            |rt| {
+                matches!(
+                    rt.sources.link.phase,
+                    mkpclient_state_link::LinkPhase::Connected
+                )
+            },
+            Duration::from_secs(5),
+        )
+        .expect("link did not connect within 5s");
+        h
+    }
+
+    /// Prepare discovery and credentials without connecting or ticking.
+    /// Startup tests can arrange an unavailable preferred server first.
+    pub fn prepare(mock: MockServer) -> Self {
         // tempdir scopes the persist driver's writes (`last_server`,
         // `last_view`, `search_history`) to a fresh dir per test run
         // so it never touches the developer's real `~/.config/mkp`.
@@ -92,25 +112,11 @@ impl Harness {
             client_key_pem: mock.certs.client_key_pem.clone(),
         });
 
-        rt.dispatch(SemanticEvent::ConnectTo { server_name });
-
-        let mut h = Harness {
+        Harness {
             rt,
             mock,
             fingerprint,
-        };
-        // Tick until Connected (or timeout).
-        h.tick_until(
-            |rt| {
-                matches!(
-                    rt.sources.link.phase,
-                    mkpclient_state_link::LinkPhase::Connected
-                )
-            },
-            Duration::from_secs(5),
-        )
-        .expect("link did not connect within 5s");
-        h
+        }
     }
 
     #[allow(dead_code)]

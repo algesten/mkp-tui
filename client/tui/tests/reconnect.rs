@@ -111,6 +111,88 @@ fn connect_and_browse(mock: MockServer) -> Harness {
     h
 }
 
+#[test]
+fn startup_retries_a_failed_probe_without_user_input() {
+    let mock = MockServer::start_with_rejected_connections(certs::generate(), script(), 1);
+    let mut h = Harness::prepare(mock);
+    let name = h.server_name();
+    let addr = h.mock.addr.to_string();
+    h.rt.sources.probes.invalidate(&addr);
+    h.rt.sources.session.preferred_server = Some(name.clone().into());
+    h.rt.sources.session.auto_connect = true;
+
+    // A restarted client waits for discovery before its first attempt.
+    h.rt.sources.discovery.remove(&name);
+    h.tick_once();
+    assert_eq!(shell(&h.rt), ShellModel::PreConnect);
+    assert!(h.rt.sources.intent.target.is_none());
+    h.rt.sources.discovery.upsert(ServerAd {
+        name: name.clone(),
+        host: "127.0.0.1".into(),
+        addr: std::net::Ipv4Addr::LOCALHOST,
+        port: h.mock.addr.port(),
+    });
+    h.tick_until(
+        |rt| {
+            matches!(
+                rt.sources.probes.get(&addr),
+                Some(mkpclient_state_probes::ProbeOutcome::Failed { .. })
+            )
+        },
+        Duration::from_secs(5),
+    )
+    .expect("the server should reject the first probe");
+    assert!(h.rt.sources.session.backend_name.is_none());
+
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Connected && resumed(rt),
+        Duration::from_secs(10),
+    )
+    .expect("startup should retry the failed probe and load the view");
+    assert_eq!(shell(&h.rt), ShellModel::Main);
+    assert_eq!(
+        h.rt.sources.session.backend_name.as_deref(),
+        Some(name.as_str())
+    );
+    assert_eq!(
+        count(&h.mock.received(), |m| matches!(m, ClientMsg::Hello { .. })),
+        1
+    );
+}
+
+#[test]
+fn startup_retries_a_failed_connection_without_user_input() {
+    let mock = MockServer::start_with_rejected_connections(certs::generate(), script(), 1);
+    let mut h = Harness::prepare(mock);
+    let name = h.server_name();
+    // The probe already succeeded, but the server rejects the actual
+    // client connection. There has never been a session to reconnect.
+    h.rt.sources.session.preferred_server = Some(name.clone().into());
+    h.rt.sources.session.auto_connect = true;
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Closed,
+        Duration::from_secs(5),
+    )
+    .expect("the server should reject the first connection");
+    assert!(h.rt.sources.session.backend_name.is_none());
+    assert!(h.rt.sources.session.lost_server.is_none());
+
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Connected && resumed(rt),
+        Duration::from_secs(10),
+    )
+    .expect("startup should retry the failed connection and load the view");
+    assert_eq!(shell(&h.rt), ShellModel::Main);
+    assert_eq!(
+        h.rt.sources.session.backend_name.as_deref(),
+        Some(name.as_str())
+    );
+    assert_eq!(
+        count(&h.mock.received(), |m| matches!(m, ClientMsg::Hello { .. })),
+        1
+    );
+}
+
 /// What the runtime went through between the drop and the recovery.
 #[derive(Default)]
 struct Outage {
