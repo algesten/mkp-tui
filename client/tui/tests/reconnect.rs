@@ -281,6 +281,124 @@ fn reconnects_to_the_same_server_and_resumes_the_view() {
 }
 
 #[test]
+fn reconnect_preserves_filtered_selection_when_playlist_order_changes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let reordered = Arc::new(AtomicBool::new(false));
+    let server_reordered = reordered.clone();
+    let base = script();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| match msg {
+            ClientMsg::GetPlaylist { id, .. } => {
+                let mut songs = vec![
+                    song("a", "Hidden"),
+                    song("b", "Match Bravo"),
+                    song("c", "Match Charlie"),
+                ];
+                if server_reordered.load(Ordering::SeqCst) {
+                    songs.reverse();
+                }
+                vec![
+                    ScriptStep::Reply(ServerMsg::Ok),
+                    ScriptStep::Broadcast(ServerMsg::ListBegin {
+                        target: ListTarget::Playlist { id: id.clone() },
+                        total: 3,
+                        focus: 0,
+                    }),
+                    ScriptStep::Broadcast(ServerMsg::ListChunk {
+                        target: ListTarget::Playlist { id: id.clone() },
+                        offset: 0,
+                        songs,
+                    }),
+                ]
+            }
+            _ => base(msg),
+        }),
+    );
+    let mut h = connect_and_browse(mock);
+    h.rt.sources.cursor.focus = mkpclient_state_ui_cursor::ColumnFocus::Middle;
+    h.dispatch(TuiCursorEvent::OpenFilterInputForFocused);
+    for c in "match".chars() {
+        h.dispatch(TuiCursorEvent::FilterInputType(c));
+    }
+    h.dispatch(TuiCursorEvent::FilterInputSubmit);
+    h.tick_once();
+    assert_eq!(h.rt.sources.filter.middle.as_ref(), "match");
+    // The visible rows are Bravo and Charlie; select Charlie.
+    h.rt.sources.cursor.middle = 1;
+    assert_eq!(
+        mkpclient_runtime::queries::hovered_middle_song(&h.rt.sources)
+            .unwrap()
+            .id,
+        "c"
+    );
+    reordered.store(true, Ordering::SeqCst);
+    h.mock.drop_client();
+    ride_out_the_outage(&mut h, Duration::from_secs(10), false);
+    assert_eq!(
+        mkpclient_runtime::queries::hovered_middle_song(&h.rt.sources)
+            .unwrap()
+            .id,
+        "c",
+        "resume the selected visible song, even when its filtered position changes"
+    );
+}
+
+#[test]
+fn reconnect_keeps_pending_selection_if_the_link_drops_again_during_reload() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let fetches = AtomicUsize::new(0);
+    let base = script();
+    let mock = MockServer::start(
+        certs::generate(),
+        Box::new(move |msg| {
+            let mut steps = base(msg);
+            if matches!(msg, ClientMsg::GetPlaylist { .. })
+                && fetches.fetch_add(1, Ordering::SeqCst) == 1
+            {
+                // The first reload supplies its placeholder rows, then
+                // the connection drops before the selected song arrives.
+                steps.truncate(2);
+            }
+            steps
+        }),
+    );
+    let mut h = connect_and_browse(mock);
+    h.mock.drop_client();
+    h.tick_until(
+        |rt| rt.sources.link.phase == LinkPhase::Closed,
+        Duration::from_secs(5),
+    )
+    .expect("first drop observed");
+    h.tick_until(
+        |rt| {
+            rt.sources.link.phase == LinkPhase::Connected
+                && rt.sources.session.auto_restored_view
+                && rt.sources.playlist_tracks.songs.len() == 3
+                && rt.sources.playlist_tracks.songs.iter().all(|s| s.is_none())
+        },
+        Duration::from_secs(10),
+    )
+    .expect("first reload is waiting for its rows");
+    assert_eq!(
+        h.rt.sources.session.pending_cursor_song_id.as_deref(),
+        Some("c")
+    );
+    h.mock.drop_client();
+    ride_out_the_outage(&mut h, Duration::from_secs(10), false);
+    assert_eq!(
+        mkpclient_runtime::queries::hovered_middle_song(&h.rt.sources)
+            .unwrap()
+            .id,
+        "c",
+        "another outage must retain the still-pending selected song"
+    );
+}
+
+#[test]
 fn reconnects_when_the_server_comes_back_on_a_new_port() {
     let _ = env_logger::builder().is_test(true).try_init();
     let certs = certs::generate();
