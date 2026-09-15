@@ -15,7 +15,7 @@ use log::debug;
 use mkpclient_driver_credentials_core::CredCmd;
 use mkpclient_driver_link_core::LinkCmd;
 use mkpclient_driver_persist_core::{LoadKey, PersistCmd, SavedView};
-use mkpclient_state_link::{Link, LinkPhase};
+use mkpclient_state_link::LinkPhase;
 use mkpclient_state_pairing::PairingPhase;
 use mkpclient_state_ui_cursor::ColumnFocus;
 use mkpclient_state_ui_filter::FilterTarget;
@@ -95,17 +95,6 @@ pub fn history_forward(sources: &mut Sources) -> bool {
     sources.history.last_transition = Some(HistoryTransition::Forward);
     sources.history.transition_seq = sources.history.transition_seq.wrapping_add(1);
     true
-}
-
-/// A new connect attempt acknowledges any prior `Closed` state — the
-/// link transitions back to `Idle` so `execute::apply_link` will act
-/// on the fresh intent. Without this, every reconnect after a
-/// disconnect is silently dropped.
-fn ack_closed(link: &mut Link) {
-    if link.phase == LinkPhase::Closed {
-        link.phase = LinkPhase::Idle;
-        link.last_err = None;
-    }
 }
 
 // ─── DispatchEvent ──────────────────────────────────────────────────
@@ -820,12 +809,14 @@ fn dispatch_cursor(ev: TuiCursorEvent, sources: &mut Sources, drivers: &Drivers)
 fn connect_to(sources: &mut Sources, server_name: String) {
     sources.intent.target = Some(Arc::from(server_name));
     sources.intent.pair_target = None;
-    ack_closed(&mut sources.link);
+    // The ask is stamped so a link that closed *before* it is dialed
+    // right away rather than after the reconnect backoff.
+    sources.intent.requested_at = Some(sources.clock.now);
 }
 
 fn begin_pair(sources: &mut Sources, server_name: String) {
     sources.intent.pair_target = Some(Arc::from(server_name));
-    ack_closed(&mut sources.link);
+    sources.intent.requested_at = Some(sources.clock.now);
 }
 
 fn confirm_pair(sources: &mut Sources, drivers: &Drivers) {
@@ -848,10 +839,27 @@ fn reject_pair(sources: &mut Sources, drivers: &Drivers) {
 
 fn disconnect(sources: &mut Sources, drivers: &Drivers) {
     sources.intent.target = None;
+    sources.intent.pair_target = None;
+    // A disconnect the user asked for is where a reconnect stops:
+    // `auto_connect` is left armed by the lost-server path so a
+    // failing redial keeps trying, and `lost_server` is what keeps
+    // the modal up. Leaving either set would have some query act on
+    // a connection nobody wants.
+    sources.session.auto_connect = false;
+    sources.session.lost_server = None;
+    request_close(sources, drivers);
+}
+
+/// Ask the worker to tear the link down. The sync intent write is
+/// `Closing`: it keeps `link_action` from dialing until the worker
+/// reports `Closed`, and it marks the close as asked for, so ingest
+/// does not arm the reconnect backoff for it.
+fn request_close(sources: &mut Sources, drivers: &Drivers) {
     if matches!(
         sources.link.phase,
         LinkPhase::Connected | LinkPhase::Connecting
     ) {
+        sources.link.phase = LinkPhase::Closing;
         drivers.link.execute([&LinkCmd::Disconnect]);
     }
 }
@@ -859,7 +867,7 @@ fn disconnect(sources: &mut Sources, drivers: &Drivers) {
 fn forget(sources: &mut Sources, drivers: &Drivers, fingerprint: String) {
     if sources.intent.target.as_deref() == Some(fingerprint.as_str()) {
         sources.intent.target = None;
-        drivers.link.execute([&LinkCmd::Disconnect]);
+        request_close(sources, drivers);
     }
     drivers
         .credentials
@@ -2032,12 +2040,7 @@ fn server_picker_modal_select(sources: &mut Sources, drivers: &Drivers) {
     sources.session.auto_connect = true;
     sources.session.lost_server = None;
     connect_to(sources, name);
-    if matches!(
-        sources.link.phase,
-        LinkPhase::Connected | LinkPhase::Connecting
-    ) {
-        drivers.link.execute([&LinkCmd::Disconnect]);
-    }
+    request_close(sources, drivers);
     sources.screen = Screen::NowPlaying;
 }
 
@@ -2866,13 +2869,14 @@ pub fn save_current_view(sources: &Sources, drivers: &Drivers, backend: String) 
 }
 
 pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
+    let selected_row = queries::middle_filtered_indices(sources)
+        .get(sources.cursor.middle)
+        .copied();
     match &sources.history.mode {
         MiddleMode::PlaylistSongs => {
             let pid = sources.playlist_tracks.playlist_id.clone()?;
-            let song_id = sources
-                .playlist_tracks
-                .songs
-                .get(sources.cursor.middle)
+            let song_id = selected_row
+                .and_then(|row| sources.playlist_tracks.songs.get(row))
                 .and_then(|slot| slot.as_ref())
                 .map(|s| s.id.clone())
                 .unwrap_or_default();
@@ -2890,7 +2894,7 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
         } => {
             let songs = queries::album_detail_songs(*awaiting_seq, sources);
             let song_id = songs
-                .and_then(|s| s.get(sources.cursor.middle).cloned())
+                .and_then(|s| selected_row.and_then(|row| s.get(row).cloned()))
                 .map(|s| s.id)
                 .unwrap_or_default();
             Some(SavedView::AlbumDetail {
@@ -2915,18 +2919,20 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
             term, search_type, ..
         } => {
             let st = queries::search_type_str(*search_type);
-            let song_id = sources
-                .search
-                .songs
-                .get(sources.cursor.middle)
-                .map(|s| s.id.clone())
+            let selected_id = selected_row
+                .and_then(|row| match search_type {
+                    SearchType::Song => sources.search.songs.get(row).map(|s| &s.id),
+                    SearchType::Album => sources.search.albums.get(row).map(|a| &a.id),
+                    SearchType::Artist => sources.search.artists.get(row).map(|a| &a.id),
+                })
+                .cloned()
                 .unwrap_or_default();
             Some(SavedView::Search {
                 query: term.clone(),
                 search_type: st.into(),
                 selected: sources.cursor.middle,
                 offset: 0,
-                selected_id: song_id,
+                selected_id,
             })
         }
     }
@@ -2947,6 +2953,13 @@ pub fn apply_saved_view(sources: &mut Sources, view: SavedView) {
         if !exists {
             if let Some(first_id) = sources.playlists.items.iter().next().map(|p| p.id.clone()) {
                 open_first_playlist(sources, first_id);
+            } else {
+                // The last playlist may have been deleted during the
+                // outage. Preserved rows are no longer a valid view.
+                sources.playlist_tracks.clear();
+                sources.history.mode = MiddleMode::PlaylistSongs;
+                sources.cursor.middle = 0;
+                sources.session.pending_cursor_song_id = None;
             }
             return;
         }

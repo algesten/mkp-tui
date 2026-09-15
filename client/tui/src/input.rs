@@ -15,9 +15,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use mkpclient_runtime::views::ShellModel;
 use mkpclient_runtime::{Notifier, Runtime, SemanticEvent, TuiCursorEvent};
-use mkpclient_state_link::LinkPhase;
-use mkpclient_state_pairing::PairingPhase;
 use mkpclient_state_ui_keybindings::{Action, KeyChord, KeyContext, Keybindings};
 use mkpclient_state_ui_screen::{ActionKind, Screen};
 
@@ -116,19 +115,23 @@ pub fn translate(ev: UiInput, rt: &mut Runtime, app: &mut AppState) -> bool {
         return true;
     }
 
-    // Pairing confirmation modal wins while it's up.
-    if rt.sources.pairing.phase == PairingPhase::AwaitingConfirmation {
-        match code {
-            KeyCode::Char('y') | KeyCode::Enter => rt.dispatch(SemanticEvent::ConfirmPair),
-            KeyCode::Char('n') => rt.dispatch(SemanticEvent::RejectPair),
-            _ => {}
+    match mkpclient_runtime::views::shell_model(mkpclient_runtime::views::ShellInput::new(
+        &rt.sources.pairing,
+        &rt.sources.link,
+        &rt.sources.session,
+    )) {
+        // Pairing confirmation modal wins while it's up.
+        ShellModel::Pairing => {
+            match code {
+                KeyCode::Char('y') | KeyCode::Enter => rt.dispatch(SemanticEvent::ConfirmPair),
+                KeyCode::Char('n') => rt.dispatch(SemanticEvent::RejectPair),
+                _ => {}
+            }
+            return false;
         }
-        return false;
-    }
-
-    // Pre-connect: server picker.
-    if rt.sources.link.phase != LinkPhase::Connected {
-        return translate_picker(code, mods, rt);
+        // Pre-connect: server picker.
+        ShellModel::PreConnect => return translate_picker(code, mods, rt),
+        ShellModel::Main => {}
     }
 
     // Selection mode takes priority over the regular pane handlers

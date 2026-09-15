@@ -6,7 +6,7 @@
 //! responses). Closes when the test drops the handle.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -24,6 +24,10 @@ pub enum ScriptStep {
     /// Reply directly to a matched `ClientMsg` with the given
     /// response message (sent on the request's seq).
     Reply(ServerMsg),
+    /// Pause between frames to model streamed pages arriving on later ticks.
+    Delay(std::time::Duration),
+    /// Stream a page correlated with the current request.
+    BroadcastForRequestTask(ServerMsg),
     /// Broadcast (seq=0). Sent before processing the next request.
     Broadcast(ServerMsg),
     /// Broadcast carrying a task_id (used for SearchMore streaming).
@@ -39,11 +43,25 @@ pub struct MockServer {
     /// assertions in scenarios that care about traffic.
     #[allow(dead_code)]
     received: Arc<Mutex<Vec<ClientMsg>>>,
+    /// The socket of the connection currently being served, so a
+    /// test can drop the client from the server side.
+    #[allow(dead_code)]
+    client: Arc<Mutex<Option<TcpStream>>>,
     _handle: JoinHandle<()>,
 }
 
 impl MockServer {
     pub fn start(certs: TestCerts, script: Script) -> Self {
+        Self::start_with_rejected_connections(certs, script, 0)
+    }
+
+    /// Accept and close the first connections before serving TLS, as a
+    /// server that is advertised before it is ready might do.
+    pub fn start_with_rejected_connections(
+        certs: TestCerts,
+        script: Script,
+        mut rejected: usize,
+    ) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let cert_der = CertificateDer::from(certs.server_cert_der.clone());
@@ -59,6 +77,8 @@ impl MockServer {
         let addr = listener.local_addr().expect("local_addr");
         let received = Arc::new(Mutex::new(Vec::<ClientMsg>::new()));
         let received_for_thread = received.clone();
+        let client = Arc::new(Mutex::new(None::<TcpStream>));
+        let client_for_thread = client.clone();
         let certs = Arc::new(certs);
 
         let handle = std::thread::spawn(move || {
@@ -66,12 +86,19 @@ impl MockServer {
             // Accept a single connection; loop in case the runtime
             // re-connects, but each connection is sequential.
             while let Ok((tcp, _peer)) = listener.accept() {
+                if rejected > 0 {
+                    rejected -= 1;
+                    let _ = tcp.shutdown(Shutdown::Both);
+                    continue;
+                }
                 let conn = match rustls::ServerConnection::new(cfg.clone()) {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
+                *client_for_thread.lock().unwrap() = tcp.try_clone().ok();
                 let mut tls = rustls::StreamOwned::new(conn, tcp);
                 handle_connection(&mut tls, &script, &received_for_thread);
+                *client_for_thread.lock().unwrap() = None;
             }
         });
 
@@ -79,6 +106,7 @@ impl MockServer {
             addr,
             certs,
             received,
+            client,
             _handle: handle,
         }
     }
@@ -86,6 +114,16 @@ impl MockServer {
     #[allow(dead_code)]
     pub fn received(&self) -> Vec<ClientMsg> {
         self.received.lock().unwrap().clone()
+    }
+
+    /// Cut the connection currently being served, the way a server
+    /// that quits or a network that blips would. The listener stays
+    /// up, so the runtime can dial again.
+    #[allow(dead_code)]
+    pub fn drop_client(&self) {
+        if let Some(tcp) = self.client.lock().unwrap().as_ref() {
+            let _ = tcp.shutdown(Shutdown::Both);
+        }
     }
 }
 
@@ -116,6 +154,16 @@ fn handle_connection(
                     let steps = script(&req.msg);
                     for step in steps {
                         let resp = match step {
+                            ScriptStep::Delay(delay) => {
+                                let _ = tls.flush();
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            ScriptStep::BroadcastForRequestTask(msg) => Response {
+                                seq: 0,
+                                task_id: req.task_id,
+                                msg,
+                            },
                             ScriptStep::Reply(msg) => Response {
                                 seq: req.seq,
                                 task_id: req.task_id,

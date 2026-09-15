@@ -16,6 +16,7 @@
 //! writes back. Spec parity: a query, a diff, a write — no
 //! transition handlers.
 
+use mkpclient_state_ui_history::MiddleMode;
 use mkpclient_state_ui_screen::Screen;
 
 use crate::queries;
@@ -58,12 +59,39 @@ pub fn cursor_clamp_action(row_count: usize, input: ColumnCursorInput) -> Cursor
     }
 }
 
+#[drv::memo(single)]
+pub fn middle_cursor_clamp_action(
+    row_count: usize,
+    awaiting_detail: bool,
+    input: ColumnCursorInput,
+) -> CursorClampAction {
+    if awaiting_detail {
+        // A response that has not arrived does not establish an empty
+        // list. Keep the restored cursor until its row count is known.
+        CursorClampAction::Noop
+    } else {
+        cursor_clamp_action(row_count, input)
+    }
+}
+
 // ─── trampolines ────────────────────────────────────────────────────
 
 pub fn apply_middle_cursor_clamp(sources: &mut Sources) {
     let row_count = queries::middle_row_count(sources);
-    let action = cursor_clamp_action(
+    let awaiting_detail = match &sources.history.mode {
+        MiddleMode::ArtistDetail {
+            awaiting_seq: Some(seq),
+            ..
+        }
+        | MiddleMode::AlbumDetail {
+            awaiting_seq: Some(seq),
+            ..
+        } => !sources.responses.by_seq.contains_key(seq),
+        _ => false,
+    };
+    let action = middle_cursor_clamp_action(
         row_count,
+        awaiting_detail,
         ColumnCursorInput {
             cursor: sources.cursor.middle,
         },

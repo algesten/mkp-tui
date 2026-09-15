@@ -33,7 +33,7 @@ use crate::views::{
     PlaylistTracksInput, PlaylistTracksPendingInput, PlaylistsInput, PreConnectInput, QueueInput,
     SearchCountsInput, SearchInputModalInput, SearchResultsInput, SelectionActionModalInput,
     SelectionBarContext, SelectionBarSongsInput, ServerLabelInput, ServerLostModalInput,
-    ServerNowPlayingInput, ServerPickerModalInput, ServerPositionInput, UiPreviewInput,
+    ServerNowPlayingInput, ServerPickerModalInput, ServerPositionInput, ShellInput, UiPreviewInput,
 };
 use crate::PeerIdentity;
 
@@ -49,6 +49,7 @@ pub fn run_render(
     driver: &UiBridgeDriver,
     state: &mut UiBridgeState,
 ) {
+    push_shell(sources, driver, state);
     push_now_playing(sources, peer, driver, state);
     push_left_column(sources, driver, state);
     push_middle_header(sources, driver, state);
@@ -102,6 +103,15 @@ fn push<T: serde::Serialize>(
 }
 
 // ─── per-view pushes ────────────────────────────────────────────────
+
+fn push_shell(sources: &Sources, driver: &UiBridgeDriver, state: &mut UiBridgeState) {
+    let model = views::shell_model(ShellInput::new(
+        &sources.pairing,
+        &sources.link,
+        &sources.session,
+    ));
+    push(ViewKind::Shell, &model, driver, state);
+}
 
 fn push_now_playing(
     sources: &Sources,

@@ -6,6 +6,7 @@
 
 use sha2::{Digest, Sha256};
 
+#[derive(Clone)]
 pub struct TestCerts {
     pub server_cert_pem: String,
     pub client_cert_pem: String,
