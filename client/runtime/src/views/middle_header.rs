@@ -292,6 +292,7 @@ mod tests {
             first_page_received: true,
             songs: imbl::Vector::from(vec![
                 std::sync::Arc::new(Song {
+                    unavailable: false,
                     id: "a".into(),
                     title: "Alpha".into(),
                     artist_name: "x".into(),
@@ -303,6 +304,7 @@ mod tests {
                     artwork_url_large: None,
                 }),
                 std::sync::Arc::new(Song {
+                    unavailable: false,
                     id: "b".into(),
                     title: "Bravo".into(),
                     artist_name: "x".into(),
@@ -314,6 +316,7 @@ mod tests {
                     artwork_url_large: None,
                 }),
                 std::sync::Arc::new(Song {
+                    unavailable: false,
                     id: "c".into(),
                     title: "Charlie".into(),
                     artist_name: "x".into(),

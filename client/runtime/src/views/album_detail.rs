@@ -224,6 +224,7 @@ mod tests {
 
     fn s(title: &str, artist: &str, dur: f32) -> Song {
         Song {
+            unavailable: false,
             id: title.into(),
             title: title.into(),
             artist_name: artist.into(),

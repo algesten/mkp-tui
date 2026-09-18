@@ -83,6 +83,10 @@ pub struct Artist {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Song {
+    /// Missing on older servers. Unavailable songs stay visible but are skipped
+    /// by the server when building the playback queue.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unavailable: bool,
     pub id: String,
     pub title: String,
     pub artist_name: String,

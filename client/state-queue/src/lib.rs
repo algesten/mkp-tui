@@ -111,6 +111,7 @@ mod tests {
 
     fn song(id: &str) -> Arc<Song> {
         Arc::new(Song {
+            unavailable: false,
             id: id.to_string(),
             title: id.to_string(),
             artist_name: String::new(),

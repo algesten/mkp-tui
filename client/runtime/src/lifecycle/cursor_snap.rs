@@ -301,6 +301,7 @@ mod tests {
 
     fn song(id: &str) -> Song {
         Song {
+            unavailable: false,
             id: id.into(),
             title: id.into(),
             artist_name: String::new(),

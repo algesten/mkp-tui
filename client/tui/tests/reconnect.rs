@@ -24,6 +24,7 @@ use common::mock_server::{MockServer, Script, ScriptStep};
 
 fn song(id: &str, title: &str) -> Song {
     Song {
+        unavailable: false,
         id: id.into(),
         title: title.into(),
         artist_name: "artist".into(),

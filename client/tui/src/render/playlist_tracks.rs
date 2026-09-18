@@ -53,10 +53,11 @@ pub fn draw(
                         album,
                         duration_str,
                         is_multi_selected,
+                        unavailable,
                         ..
                     } => {
                         let is_cursor = row_i == model.selected_filtered && model.focused;
-                        let row_style = row_style_combined(
+                        let mut row_style = row_style_combined(
                             row_i,
                             model.selected_filtered,
                             model.focused,
@@ -66,6 +67,14 @@ pub fn draw(
                             false,
                             model.in_selection,
                         );
+                        if *unavailable && !is_cursor {
+                            row_style = row_style.fg(Color::DarkGray);
+                        }
+                        let title = if *unavailable {
+                            format!("× {title}")
+                        } else {
+                            title.clone()
+                        };
                         // Magenta `❯ ` prefix for non-cursor multi-
                         // selected rows; widths shrink by 1 each on
                         // the variable-width columns.
@@ -87,7 +96,7 @@ pub fn draw(
                         // cursor row, fall back to the cursor style
                         // (black-on-yellow) so the time stays legible
                         // against the yellow band.
-                        let cyan_col = if is_cursor {
+                        let cyan_col = if is_cursor || *unavailable {
                             row_style
                         } else {
                             Style::default().fg(Color::Cyan)
@@ -100,7 +109,7 @@ pub fn draw(
                             ));
                         }
                         spans.extend([
-                            Span::styled(pad_or_truncate(title, tw), row_style),
+                            Span::styled(pad_or_truncate(&title, tw), row_style),
                             Span::styled(" ", row_style),
                             Span::styled(pad_or_truncate(artist, aw), dim_col),
                             Span::styled(" ", row_style),

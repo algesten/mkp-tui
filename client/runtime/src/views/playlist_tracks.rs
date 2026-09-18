@@ -26,6 +26,7 @@ pub enum PlaylistTrackRow {
         album: String,
         duration_str: String,
         is_multi_selected: bool,
+        unavailable: bool,
     },
     /// `…` placeholder for a slot whose chunk hasn't arrived yet.
     Pending,
@@ -145,6 +146,7 @@ pub fn playlist_tracks_body_model<'a, 'b>(
                 }
                 rows.push_back(PlaylistTrackRow::Song {
                     orig_index,
+                    unavailable: s.unavailable,
                     title: s.title.clone(),
                     artist: s.artist_name.clone(),
                     album: s.album_title.clone(),
@@ -156,6 +158,7 @@ pub fn playlist_tracks_body_model<'a, 'b>(
             Some(s) => {
                 rows.push_back(PlaylistTrackRow::Song {
                     orig_index,
+                    unavailable: s.unavailable,
                     title: s.title.clone(),
                     artist: s.artist_name.clone(),
                     album: s.album_title.clone(),
@@ -199,6 +202,7 @@ mod tests {
 
     fn s(id: &str, title: &str, artist: &str, album: &str, dur: f32) -> Song {
         Song {
+            unavailable: false,
             id: id.into(),
             title: title.into(),
             artist_name: artist.into(),
@@ -226,6 +230,45 @@ mod tests {
 
     fn no_pending() -> PendingPlaylists {
         PendingPlaylists::default()
+    }
+
+    #[test]
+    fn unavailable_rows_remain_visible_with_original_indices() {
+        let mut unavailable = s("bad", "Unavailable", "Artist", "Album", 30.0);
+        unavailable.unavailable = true;
+        let tracks = tracks_with(vec![
+            Some(unavailable),
+            Some(s("good", "Playable", "Artist", "Album", 40.0)),
+        ]);
+        let pending = no_pending();
+        let model = playlist_tracks_body_model(
+            PlaylistTracksInput::new(&tracks),
+            PlaylistTracksPendingInput::new(&pending),
+            &Arc::from(""),
+            false,
+            &OrdSet::new(),
+            0,
+            true,
+        );
+        let PlaylistTracksState::Tracks { rows } = model.state else {
+            panic!("expected tracks")
+        };
+        assert!(matches!(
+            &rows[0],
+            PlaylistTrackRow::Song {
+                orig_index: 0,
+                unavailable: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &rows[1],
+            PlaylistTrackRow::Song {
+                orig_index: 1,
+                unavailable: false,
+                ..
+            }
+        ));
     }
 
     #[test]

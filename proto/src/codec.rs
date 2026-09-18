@@ -49,3 +49,58 @@ pub fn frame_len(buf: &[u8]) -> Option<usize> {
     }
     Some(total)
 }
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    use crate::Song;
+
+    // Exact song shape understood before availability was added.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct LegacySong {
+        id: String,
+        title: String,
+        artist_name: String,
+        album_title: String,
+        duration: f32,
+        track_number: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artwork_url_small: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artwork_url_large: Option<String>,
+    }
+
+    #[test]
+    fn song_availability_is_compatible_in_both_directions() {
+        let legacy = LegacySong {
+            id: "track".into(),
+            title: "Track".into(),
+            artist_name: "Artist".into(),
+            album_title: "Album".into(),
+            duration: 123.0,
+            track_number: Some(1),
+            url: None,
+            artwork_url_small: None,
+            artwork_url_large: None,
+        };
+        let old_frame = encode_frame(&legacy).unwrap();
+        let (mut modern, _) = try_decode::<Song>(&old_frame).unwrap().unwrap();
+        assert!(
+            !modern.unavailable,
+            "missing field must preserve legacy behavior"
+        );
+        // Playable songs keep the exact old wire representation.
+        assert_eq!(encode_frame(&modern).unwrap(), old_frame);
+        modern.unavailable = true;
+        let new_frame = encode_frame(&modern).unwrap();
+        let (decoded_old, _) = try_decode::<LegacySong>(&new_frame).unwrap().unwrap();
+        assert_eq!(
+            decoded_old, legacy,
+            "old clients must ignore the added field"
+        );
+        let (decoded_new, _) = try_decode::<Song>(&new_frame).unwrap().unwrap();
+        assert!(decoded_new.unavailable);
+    }
+}

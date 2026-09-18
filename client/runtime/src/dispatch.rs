@@ -2155,6 +2155,9 @@ fn middle_cursor_down(sources: &mut Sources) {
 }
 
 fn middle_activate(sources: &mut Sources) {
+    if queries::hovered_middle_song(sources).is_some_and(|s| s.unavailable) {
+        return;
+    }
     let n = queries::middle_row_count(sources);
     if n == 0 {
         return;
