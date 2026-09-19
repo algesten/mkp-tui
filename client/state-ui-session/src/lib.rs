@@ -51,6 +51,9 @@ pub struct UiSession {
     /// view is resumed by re-requesting its data; different means the
     /// saved view for the new backend is loaded from disk.
     pub view_backend: Option<Arc<str>>,
+    /// Last playlist interest sent on this connection and its next heartbeat.
+    pub viewing_playlist: Option<Arc<str>>,
+    pub viewing_playlist_due: Option<Instant>,
 }
 
 impl Default for UiSession {
@@ -64,6 +67,8 @@ impl Default for UiSession {
             backend_name: None,
             pending_cursor_song_id: None,
             view_backend: None,
+            viewing_playlist: None,
+            viewing_playlist_due: None,
         }
     }
 }

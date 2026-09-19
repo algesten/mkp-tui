@@ -125,6 +125,8 @@ pub enum ClientMsg {
         id: String,
         focus: usize,
     },
+    /// Refresh interest when the viewed playlist changes; renew while visible.
+    /// An empty ID releases interest without changing the wire message shape.
     ViewingPlaylist {
         id: String,
     },

@@ -410,6 +410,7 @@ pub fn run(sources: &mut Sources, drivers: &Drivers) {
     crate::lifecycle::pending_add::apply_pending_add(sources, drivers);
     crate::lifecycle::lost_modal::apply_lost_modal(sources);
     crate::lifecycle::restore::apply_restore(sources, drivers);
+    crate::lifecycle::viewing_playlist::apply_viewing_playlist(sources);
     crate::lifecycle::playlists_refetch::apply_playlists_refetch(sources);
     crate::lifecycle::playlists_refetch::apply_playlist_tracks_refetch(sources);
     // Runs after restore so the just-applied `history.mode` gets

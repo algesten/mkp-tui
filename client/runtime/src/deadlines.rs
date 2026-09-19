@@ -50,6 +50,8 @@ pub fn nearest_deadline(sources: &Sources) -> Option<Instant> {
         consider(&mut soonest, Some(sources.clock.now + SPIN_INTERVAL));
     }
 
+    consider(&mut soonest, sources.session.viewing_playlist_due);
+
     // Hover-preview expiry — the bar reverts to now-playing once
     // the preview's TTL elapses, so the loop must wake at exactly
     // that instant for the renderer to redraw without a stale-
