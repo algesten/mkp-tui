@@ -1,5 +1,7 @@
 # Unreleased
 
+# 1.1.0
+
 * Reconnect automatically after connection loss, restoring the same server,
   view and selection
 * Grey out unavailable songs and skip them during playback
