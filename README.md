@@ -75,6 +75,11 @@ nix run github:algesten/mkp-tui#mkp
 cargo install --locked --git https://github.com/algesten/mkp-tui
 ```
 
+Cargo installs from `main`, which stays stable and backwards compatible but
+can include changes ahead of the latest promoted release. Homebrew and the
+website downloads follow the latest promoted release. GitHub prereleases can
+be replaced while being tested; promoted versions are frozen.
+
 **Prebuilt Linux binaries** — statically linked x86_64 and aarch64 builds
 are attached to every [release](https://github.com/algesten/mkp-tui/releases/latest).
 They carry no runtime dependencies, so they run on any distribution

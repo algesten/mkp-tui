@@ -1,31 +1,23 @@
 name: Release
 
-# Fires on a release tag propagated here from the private mkp repo by
-# its scripts/propagate-tag.sh. Builds the static Linux binaries and
-# opens a DRAFT release holding them.
-#
-# The draft is deliberate. The macOS DMG is built, signed and
-# notarized on a Mac and uploaded afterwards by `make publish`, which
-# then publishes the release. Until that happens the release stays a
-# draft, so GitHub's /releases/latest — which the marketing site reads
-# — never advertises a version whose DMG is not there yet.
-#
-# workflow_dispatch builds the same artifacts without a tag and skips
-# the release entirely, for testing the build itself.
+# Builds artifacts only. The private repo's make release downloads the exact
+# run, adds signed macOS artifacts, and publishes the complete prerelease.
+# Moving a candidate tag must never let an older CI run overwrite a release.
+run-name: Linux ${{ inputs.version }} / ${{ inputs.candidate || 'manual' }}
 
 on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version string to build with (no release is created)'
+        description: 'Version string embedded in the binaries'
         required: true
         default: '0.0.0-test'
+      candidate:
+        description: 'Unique candidate ID supplied by make release'
+        required: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -42,10 +34,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - name: Resolve version
         id: version
-        run: echo "version=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || exit 1
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       # musl-tools supplies musl-gcc. rustc bundles a self-contained
       # musl for pure-Rust builds, but aws-lc-rs (via rustls) compiles
@@ -106,28 +104,3 @@ jobs:
             ${{ steps.package.outputs.name }}
             ${{ steps.package.outputs.name }}.sha256
           if-no-files-found: error
-
-  draft-release:
-    name: Open draft release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          merge-multiple: true
-          path: dist
-
-      # --draft, not a published release: `make publish` on the Mac
-      # adds the notarized DMG and publishes. See the header comment.
-      - name: Create draft release with the Linux artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          gh release create "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft \
-            --title "$VERSION" \
-            --notes "Linux builds attached. The macOS DMG is added when the release is published." \
-            dist/*
