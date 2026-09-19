@@ -137,6 +137,8 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                 continue;
             }
             LinkEvent::Closed { error } => {
+                sources.session.viewing_playlist = None;
+                sources.session.viewing_playlist_due = None;
                 // On disconnect, if we had an `AwaitingConfirmation`
                 // pairing still stashed in sources, promote the
                 // captured certs into a `Save` cmd so credentials
@@ -228,6 +230,8 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
     }
     match &response.msg {
         ServerMsg::BackendChanged { backend } => {
+            sources.session.viewing_playlist = None;
+            sources.session.viewing_playlist_due = None;
             sources.server.backend = Some(Arc::from(backend.as_str()));
             // Backend initialization / swap invalidates all state
             // derived from the prior backend.
@@ -291,6 +295,12 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
                 patch(&mut frame.mode);
             }
         }
+        ServerMsg::Ok => {
+            sources.pending_playlists.remove_adding_by_seq(response.seq);
+            sources
+                .pending_playlists
+                .remove_removing_by_seq(response.seq);
+        }
         ServerMsg::Error { .. } => {
             // Roll back any optimistic mutation on rejection. The
             // `apply_server_errors` lifecycle still surfaces the
@@ -318,6 +328,8 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
             sources.server.play = Some(play);
         }
         ServerMsg::BackendChanged { backend } => {
+            sources.session.viewing_playlist = None;
+            sources.session.viewing_playlist_due = None;
             sources.server.backend = Some(Arc::from(backend));
             // Backend swap invalidates queue + playlists + tracks.
             sources.queue = Default::default();
@@ -332,7 +344,7 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
             playlist_id,
             track_count,
         } => {
-            if task_id == sources.playlists.pending_task {
+            if task_id.is_none() || task_id == sources.playlists.pending_task {
                 sources.playlists.set_track_count(&playlist_id, track_count);
             }
         }
@@ -363,19 +375,13 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
                 sources
                     .playlists
                     .adjust_track_count(&playlist_id, count as i32);
-                // Drop the oldest in-flight add for this playlist.
-                // Server processes adds serially so FIFO matches.
-                sources
-                    .pending_playlists
-                    .drop_oldest_adding_for(&playlist_id);
+                // A peer's broadcast cannot acknowledge this client's task.
+                // The correlated response owns pending-operation cleanup.
             }
-            mkproto::PlaylistMutation::SongRemoved { song_id, index } => {
+            mkproto::PlaylistMutation::SongRemoved { index, .. } => {
                 sources.playlist_tracks.remove_at(&playlist_id, index);
                 sources.playlists.adjust_track_count(&playlist_id, -1);
-                // Confirm the optimistic removal for this song.
-                sources
-                    .pending_playlists
-                    .drop_removing_song(&playlist_id, &song_id);
+                // Only the correlated response acknowledges our own removal.
             }
             mkproto::PlaylistMutation::Modified => {
                 // The mutation says "this playlist's content may be
@@ -396,7 +402,15 @@ fn fold_broadcast(sources: &mut Sources, response: Response) {
             focus,
         } => match target {
             ListTarget::Playlist { id } => {
-                sources.playlist_tracks.begin(Arc::from(id), total, focus);
+                if sources
+                    .playlist_tracks
+                    .playlist_id
+                    .as_deref()
+                    .is_none_or(|current| current == id)
+                {
+                    sources.playlists.set_track_count(&id, total);
+                    sources.playlist_tracks.begin(Arc::from(id), total, focus);
+                }
             }
             ListTarget::Queue { queue_id, version } => {
                 if sources.queue.queue_id != Some(queue_id) {
@@ -694,5 +708,149 @@ mod keybindings_persist_tests {
             sources.toast.message.as_deref(),
             Some("Failed to save keybindings")
         );
+    }
+}
+
+#[cfg(test)]
+mod playlist_sync_tests {
+    use super::*;
+    use mkproto::{Playlist, PlaylistMutation, Song};
+
+    fn song(id: &str) -> Song {
+        Song {
+            id: id.into(),
+            title: id.into(),
+            artist_name: String::new(),
+            album_title: String::new(),
+            duration: 0.0,
+            track_number: None,
+            url: None,
+            artwork_url_small: None,
+            artwork_url_large: None,
+            unavailable: false,
+        }
+    }
+
+    fn frame(sources: &mut Sources, msg: ServerMsg) {
+        fold_broadcast(
+            sources,
+            Response {
+                seq: 0,
+                task_id: None,
+                msg,
+            },
+        );
+    }
+
+    #[test]
+    fn remote_snapshot_replaces_optimism_and_peer_edits_do_not_acknowledge_our_requests() {
+        let mut s = Sources::default();
+        s.playlists.set_all(vec![Playlist {
+            id: "p".into(),
+            name: "P".into(),
+            description: String::new(),
+            track_count: 0,
+        }]);
+        s.playlist_tracks.playlist_id = Some(Arc::from("p"));
+        let target = ListTarget::Playlist { id: "p".into() };
+        frame(
+            &mut s,
+            ServerMsg::ListBegin {
+                target: target.clone(),
+                total: 3,
+                focus: 0,
+            },
+        );
+        frame(
+            &mut s,
+            ServerMsg::ListChunk {
+                target: target.clone(),
+                offset: 0,
+                songs: vec![song("a"), song("b"), song("a")],
+            },
+        );
+        s.pending_playlists.add_adding(41, "p".into());
+        frame(
+            &mut s,
+            ServerMsg::PlaylistMutated {
+                playlist_id: "p".into(),
+                mutation: PlaylistMutation::SongAdded {
+                    songs: vec![song("peer")],
+                },
+            },
+        );
+        assert_eq!(s.pending_playlists.adding.len(), 1);
+        mirror_response_into_source(
+            &mut s,
+            &Response {
+                seq: 41,
+                task_id: None,
+                msg: ServerMsg::Ok,
+            },
+        );
+        assert!(s.pending_playlists.adding.is_empty());
+        // Reconciliation is authoritative even if a collaborator removes the
+        // addition, reorders duplicates, and changes the middle of the list.
+        frame(
+            &mut s,
+            ServerMsg::ListBegin {
+                target: target.clone(),
+                total: 3,
+                focus: 0,
+            },
+        );
+        frame(
+            &mut s,
+            ServerMsg::ListChunk {
+                target,
+                offset: 0,
+                songs: vec![song("a"), song("a"), song("external")],
+            },
+        );
+        s.playlists.pending_task = Some(99);
+        frame(
+            &mut s,
+            ServerMsg::PlaylistTrackCount {
+                playlist_id: "p".into(),
+                track_count: 3,
+            },
+        );
+        assert_eq!(
+            s.playlist_tracks
+                .songs
+                .iter()
+                .map(|s| s.as_ref().unwrap().id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "a", "external"]
+        );
+        assert_eq!(s.playlists.items[0].track_count, 3);
+        assert!(!s.playlists.stale);
+        assert!(!s.playlist_tracks.stale);
+    }
+
+    #[test]
+    fn late_snapshot_from_previous_view_does_not_retarget_the_client() {
+        let mut s = Sources::default();
+        s.playlist_tracks.begin(Arc::from("new"), 1, 0);
+        s.playlist_tracks.chunk(0, vec![song("current")]);
+        let target = ListTarget::Playlist { id: "old".into() };
+        frame(
+            &mut s,
+            ServerMsg::ListBegin {
+                target: target.clone(),
+                total: 1,
+                focus: 0,
+            },
+        );
+        frame(
+            &mut s,
+            ServerMsg::ListChunk {
+                target,
+                offset: 0,
+                songs: vec![song("stale")],
+            },
+        );
+        assert_eq!(s.playlist_tracks.playlist_id.as_deref(), Some("new"));
+        assert_eq!(s.playlist_tracks.songs[0].as_ref().unwrap().id, "current");
     }
 }

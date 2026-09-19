@@ -24,3 +24,5 @@ pub mod search_history_push;
 pub mod search_reopen;
 pub mod server_errors;
 pub mod view_persist;
+
+pub mod viewing_playlist;
