@@ -10,5 +10,6 @@ repository.workspace = true
 # drains in order when the link is connected.
 
 [dependencies]
+log = { workspace = true }
 imbl = { workspace = true }
 mkproto = { workspace = true }

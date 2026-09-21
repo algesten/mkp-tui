@@ -36,15 +36,25 @@ pub fn start_with_options(
     let wake = make_wake();
     let notify = wake.notify.clone();
 
+    let phase = std::time::Instant::now();
     let (discovery, disc_marker) =
         disc_native::spawn(discovery_trace(trace.clone()), notify.clone());
+    log::trace!(target: "mkp_startup", "event=worker_spawn driver=discovery duration_us={}", phase.elapsed().as_micros());
+    let phase = std::time::Instant::now();
     let (credentials, cred_marker) =
         cred_native::spawn(credentials_trace(trace.clone()), notify.clone());
+    log::trace!(target: "mkp_startup", "event=worker_spawn driver=credentials duration_us={}", phase.elapsed().as_micros());
+    let phase = std::time::Instant::now();
     let (link, link_marker) = link_native::spawn(link_trace(trace.clone()), notify.clone());
+    log::trace!(target: "mkp_startup", "event=worker_spawn driver=link duration_us={}", phase.elapsed().as_micros());
+    let phase = std::time::Instant::now();
     let (persist_handle, persist_marker) =
         persist_native::spawn(persist_trace(trace.clone()), notify.clone());
+    log::trace!(target: "mkp_startup", "event=worker_spawn driver=persist_handle duration_us={}", phase.elapsed().as_micros());
+    let phase = std::time::Instant::now();
     let (clipboard, clipboard_marker) =
         clipboard_native::spawn(clipboard_trace(trace.clone()), notify.clone());
+    log::trace!(target: "mkp_startup", "event=worker_spawn driver=clipboard duration_us={}", phase.elapsed().as_micros());
 
     let natives: Vec<NativeMarker> = vec![
         Box::new(disc_marker),

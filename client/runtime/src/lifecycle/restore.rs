@@ -233,6 +233,9 @@ pub fn apply_restore(sources: &mut Sources, drivers: &Drivers) {
         RestorePersistInput::new(&sources.persist),
     );
     let action = restore_action(desired, RestorePersistInput::new(&sources.persist));
+    if !matches!(action, RestoreAction::Noop) {
+        log::trace!(target: "mkp_startup", "event=restore_action action={action:?}");
+    }
     match action {
         RestoreAction::Noop => {}
         RestoreAction::Resume {

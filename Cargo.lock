@@ -1439,6 +1439,7 @@ name = "mkpclient-state-request-queue"
 version = "0.1.0"
 dependencies = [
  "imbl",
+ "log",
  "mkproto",
 ]
 

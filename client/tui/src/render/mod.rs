@@ -193,6 +193,7 @@ pub(super) fn styled_block_spans<'a>(spans: Vec<Span<'a>>) -> Block<'a> {
 
 pub fn draw(frame: &mut Frame, app: &AppState, rt: &Runtime) {
     let area = frame.area();
+    app.middle_height.set(0);
 
     match mkpclient_runtime::views::shell_model(mkpclient_runtime::views::ShellInput::new(
         &rt.sources.pairing,
@@ -491,6 +492,7 @@ fn draw_tracks_col(frame: &mut Frame, area: Rect, app: &AppState, rt: &Runtime) 
         inner
     };
 
+    app.middle_height.set(body_area.height as usize);
     match &rt.sources.history.mode {
         MiddleMode::PlaylistSongs => {
             draw_playlist_tracks_body(frame, body_area, app, rt, focused, &widths);

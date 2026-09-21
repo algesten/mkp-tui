@@ -222,3 +222,95 @@ impl persist::Trace for PersistAdapter {
 /// here.
 #[allow(dead_code)]
 fn _force_pairing_entry(_: &PairingEntry) {}
+
+/// Payload-safe log sink for startup and ongoing driver diagnostics.
+/// Callbacks indicate command dispatch / event drain, not socket I/O.
+#[derive(Default)]
+pub struct LoggingTrace {
+    requests: std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>>,
+}
+impl Trace for LoggingTrace {
+    fn discovery_added(&self, ad: &ServerAd) {
+        log::trace!(target: "mkp_startup", "event=discovery_added ad={ad:?}");
+    }
+    fn discovery_refreshed(&self, ad: &ServerAd) {
+        log::trace!(target: "mkp_startup", "event=discovery_refreshed ad={ad:?}");
+    }
+    fn discovery_removed(&self, name: &str) {
+        log::trace!(target: "mkp_startup", "event=discovery_removed name={name:?}");
+    }
+    fn cred_load_start(&self) {
+        log::trace!(target: "mkp_startup", "event=cred_load_start ");
+    }
+    fn cred_load_done(&self, n: usize) {
+        log::trace!(target: "mkp_startup", "event=cred_load_done count={n}");
+    }
+    fn cred_save(&self, _fp: &str) {
+        log::trace!(target: "mkp_startup", "event=cred_save ");
+    }
+    fn cred_delete(&self, _fp: &str) {
+        log::trace!(target: "mkp_startup", "event=cred_delete ");
+    }
+    fn cred_error(&self, op: &'static str, msg: &str) {
+        log::trace!(target: "mkp_startup", "event=cred_error op={op} error={msg:?}");
+    }
+    fn link_connect(&self, addr: &str, kind: LinkKind) {
+        log::trace!(target: "mkp_startup", "event=link_connect addr={addr} kind={kind:?}");
+    }
+    fn link_connected(&self, kind: LinkKind) {
+        log::trace!(target: "mkp_startup", "event=link_connected kind={kind:?}");
+    }
+    fn link_send(&self, seq: u64) {
+        if log::log_enabled!(target: "mkp_startup", log::Level::Trace) {
+            let mut requests = self.requests.lock().unwrap();
+            // Bound diagnostics even if a peer never replies.
+            if requests.len() >= 1024 {
+                requests.clear();
+            }
+            requests.insert(seq, std::time::Instant::now());
+        }
+        log::trace!(target: "mkp_startup", "event=link_send seq={seq}");
+    }
+    fn link_recv(&self, seq: u64) {
+        if seq != 0 && log::log_enabled!(target: "mkp_startup", log::Level::Trace) {
+            if let Some(sent) = self.requests.lock().unwrap().remove(&seq) {
+                log::trace!(target: "mkp_startup", "event=request_round_trip seq={seq} dispatch_to_drain_us={}", sent.elapsed().as_micros());
+            }
+        }
+        log::trace!(target: "mkp_startup", "event=link_recv seq={seq}");
+    }
+    fn link_closed(&self, err: Option<&str>) {
+        self.requests.lock().unwrap().clear();
+        log::trace!(target: "mkp_startup", "event=link_closed error={err:?}");
+    }
+    fn pairing_ready(&self, _fp: &str, _code: &str) {
+        log::trace!(target: "mkp_startup", "event=pairing_ready ");
+    }
+    fn pair_failed(&self, msg: &str) {
+        log::trace!(target: "mkp_startup", "event=pair_failed error={msg:?}");
+    }
+    fn probe(&self, addr: &str) {
+        log::trace!(target: "mkp_startup", "event=probe addr={addr}");
+    }
+    fn probe_result(&self, addr: &str, result: &Result<String, String>) {
+        log::trace!(target: "mkp_startup", "event=probe_result addr={addr} ok={}", result.is_ok());
+    }
+    fn persist_load(&self, key: &LoadKey) {
+        log::trace!(target: "mkp_startup", "event=persist_load key={key:?}");
+    }
+    fn persist_loaded(&self, key: &LoadKey) {
+        log::trace!(target: "mkp_startup", "event=persist_loaded key={key:?}");
+    }
+    fn persist_save(&self, op: &'static str) {
+        log::trace!(target: "mkp_startup", "event=persist_save op={op}");
+    }
+    fn persist_error(&self, op: &'static str, err: &str) {
+        log::trace!(target: "mkp_startup", "event=persist_error op={op} error={err:?}");
+    }
+    fn clipboard_write(&self, seq: u64) {
+        log::trace!(target: "mkp_startup", "event=clipboard_write seq={seq}");
+    }
+    fn clipboard_outcome(&self, seq: u64, ok: bool) {
+        log::trace!(target: "mkp_startup", "event=clipboard_outcome seq={seq} ok={ok}");
+    }
+}

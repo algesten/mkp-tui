@@ -97,6 +97,109 @@ Builds on macOS and Linux. Rust via [rustup](https://rustup.rs/).
 `mkp --version` reports the release version when one was supplied at build
 time, and `<tag>-<n>-g<sha>` for a build off an untagged commit.
 
+## Startup diagnostics
+
+From this checkout, capture startup while keeping the TUI on the terminal:
+
+```bash
+RUST_LOG=trace cargo run --release -p mkpclient-tui 2>/tmp/mkp.log
+```
+
+Use `RUST_LOG=mkp_startup=trace` to capture only client timing events.
+When running from the parent Make Play repository, add
+`--manifest-path tui/Cargo.toml --target-dir target` to the cargo command.
+Logs go to **stderr**; redirecting stdout captures terminal output instead.
+
+Each line includes wall-clock time, monotonic milliseconds since process
+startup, and the thread name. The `mkp_startup` target records worker setup,
+credential/persistence I/O, discovery, certificate probes, TCP/TLS, request
+queueing, frame encoding/writes/reads/decoding, ingestion, lifecycle stages,
+view restoration, rendering, terminal drawing, and wake/deadline waits.
+`seq` correlates requests and replies; `task` correlates streamed follow-ups.
+`request_round_trip` measures driver dispatch to event drain (including local
+queueing), not pure network latency. `view_drawn` reports changing readiness
+and row counts after a successful draw. A restored view is not necessarily
+fully loaded: inspect subsequent chunks, task completion, and rendered counts.
+
+Compare `socket_write_done` to `frame_decoded` to locate server/network waits,
+then `ingest_frame_done` and `view_drawn` to locate client-side delays. Durations
+are in microseconds. Nested durations include tracing overhead; full trace
+logging affects the measurements. Credentials and full song payloads are not
+logged by these timing events. Logs continue after startup to capture late
+chunks and reconnects; quit once the view and playback state have settled.
+
+### Repeatable startup benchmark
+
+On macOS or Linux with Python 3.9+, build the release binary, then run:
+
+```bash
+cargo build --release -p mkpclient-tui
+python3 scripts/benchmark-startup.py \
+  --binary target/release/mkp --server SERVER_NAME \
+  --runs 20 --warmup 1 --timeout 30 \
+  --fixture "server build/version; saved view; warm server" \
+  --output /tmp/mkp-startup-benchmark
+```
+
+Use the exact paired name from the server picker. The output directory must
+be new. The harness launches the actual TUI in a 140×40 pseudo-terminal,
+continuously drains its output, and enables only `RUST_LOG=mkp_startup=trace`.
+It snapshots your configuration into a private temporary directory and copies
+that snapshot for every run, selecting the requested server there. It sends no
+keyboard or playback commands and does not change your normal configuration.
+`--config`, `--rows`, and `--cols` override the fixture inputs.
+
+`report.json` contains every measured run and warmup, failures/timeouts, missing
+milestones, client version/profile/OS/architecture, binary and saved-view hashes,
+fixture dimensions, and median/p95 timings. `summary.txt` is the readable summary;
+each run also has a TRACE log. Percentiles use nearest rank on successful complete
+runs only, with their sample count and failed/timed-out runs explicitly reported.
+Partial timings remain in the JSON. Any failed warmup, failed/timed-out measured
+run, or interruption makes the command exit nonzero. Keep fixture dimensions,
+server build, and logging settings consistent between comparisons; record server
+TRACE settings in `--fixture`. A small sample is a smoke check, not a reliable p95.
+
+The baseline is **authenticated TLS completion**, excluding discovery and the
+preliminary certificate probe. Process-to-TLS time is reported separately.
+All five milestones are observed after successful terminal draws:
+
+- `playback_queue`: a playback snapshot (including stopped/no song) and a queue
+  snapshot with its announced rows, including an explicitly empty queue.
+- `sidebar`: the playlist list has arrived, including an empty library.
+- `visible_view`: navigation is restored and the current viewport contains loaded
+  rows; an explicitly loaded empty playlist/result is ready. For playlist views,
+  pending slots in the viewport prevent readiness.
+- `complete_view`: the saved view's data and its correlated content stream are
+  complete; merely restoring navigation or receiving `ListBegin` is insufficient.
+- `background_complete`: all the above plus completion of this client's startup
+  streams, including playlist counts. Other peers' task broadcasts are ignored.
+
+Readiness is based on what the server has announced; it cannot certify upstream
+freshness or predict later unsolicited updates. Request/task failures and
+reconnects fail a sample even if the UI falls back to an empty view. Terminal draw
+completion includes model construction and buffer output, not a physical display's
+refresh. Server/request/render timing events explain the interval between milestones.
+
+Scenarios are separate reports. `--scenario warm` optionally warms once before
+measurement. `--scenario restarted` and `--scenario uncached` **require** an
+executable `--prepare /path/to/script`, invoked before every warmup and measured
+sample, with `--prepare-timeout` (default 60 seconds). The executable receives no
+arguments and must synchronously establish the named fixture, e.g. restart and
+wait for the server, or reset the intended uncached server fixture. A preparation
+failure is recorded and that client launch is skipped. The harness does not assume
+that repeated connections remain cold, and does not itself restart your server or
+clear its caches. Describe the preparation in `--fixture` and use a matching saved
+view in `--config` for uncached-view tests.
+
+Warm cached targets: p95 within **50 ms after TLS** for playback, queue, sidebar,
+and visible saved-view rows; within **100 ms** for a representative cached
+206-track complete view. These are measurement targets, not claims that an
+uncached upstream fetch or an arbitrary-size library can meet them.
+
+Normal runs need no diagnostic flags: unset `RUST_LOG` (or choose `info`) to omit
+these TRACE events. The benchmark always enables them and records that setting;
+trace output adds overhead, so compare like with like.
+
 ## Layout
 
 - **proto/** — `mkproto`: shared protocol types and the length-prefixed

@@ -32,7 +32,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{debug, error, info, warn};
 use rustls::pki_types::ServerName;
@@ -124,7 +124,10 @@ fn manager_loop(
                 Err(e) => emit_closed(&event_tx, &notify, Some(e)),
             },
             LinkCmd::ProbeFingerprint { addr } => {
+                let phase = Instant::now();
+                log::trace!(target: "mkp_startup", "event=probe_worker_start addr={addr}");
                 let result = do_probe(&addr);
+                log::trace!(target: "mkp_startup", "event=probe_worker_done addr={addr} ok={} duration_us={}", result.is_ok(), phase.elapsed().as_micros());
                 let _ = event_tx.send(LinkEvent::ProbeResult { addr, result });
                 notify.notify();
             }
@@ -147,20 +150,30 @@ fn connect_client(
     client_key_pem: &str,
 ) -> Result<(ClientConnection, TcpStream), String> {
     info!("link: connect_client addr={addr}");
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tls_config_start");
     let config = tls::authenticated_config(server_cert_pem, client_cert_pem, client_key_pem)?;
     let server_name = ServerName::try_from("mkplay").expect("valid server name");
     let mut conn = ClientConnection::new(config, server_name)
         .map_err(|e| format!("rustls ClientConnection: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tls_config_done duration_us={}", phase.elapsed().as_micros());
 
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tcp_connect_start addr={addr}");
     let mut tcp = TcpStream::connect(addr).map_err(|e| format!("TCP connect: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tcp_connect_done addr={addr} duration_us={}", phase.elapsed().as_micros());
     tcp.set_nodelay(true).ok();
     info!("link: TCP connected to {addr}, starting TLS handshake");
 
     // Drive the handshake on this thread, blocking. `complete_io`
     // loops internally calling `read_tls` / `write_tls` until
     // `is_handshaking()` returns false.
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tls_handshake_start addr={addr}");
     conn.complete_io(&mut tcp)
         .map_err(|e| format!("TLS handshake: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tls_handshake_done addr={addr} duration_us={}", phase.elapsed().as_micros());
+    log::trace!(target: "mkp_startup", "event=client_tls_ready addr={addr}");
     info!("link: TLS handshake complete");
 
     Ok((conn, tcp))
@@ -209,13 +222,18 @@ fn run_client_connected(
     while let Ok(event) = mgr_rx.recv() {
         match event {
             ManagerEvent::Cmd(LinkCmd::Send { seq, task_id, msg }) => {
+                let phase = Instant::now();
+                log::trace!(target: "mkp_startup", "event=send_worker_start seq={seq} task={task_id:?} msg={}", msg.diagnostic_name());
                 let req = Request { seq, task_id, msg };
                 match codec::encode_frame(&req) {
                     Ok(frame) => {
+                        log::trace!(target: "mkp_startup", "event=encode_done seq={seq} bytes={} duration_us={}", frame.len(), phase.elapsed().as_micros());
+                        let write_started = Instant::now();
                         if let Err(e) = write_plaintext(&conn, &mut tcp_write, &frame) {
                             forced_error = Some(format!("send: {e}"));
                             break;
                         }
+                        log::trace!(target: "mkp_startup", "event=socket_write_done seq={seq} task={task_id:?} duration_us={}", write_started.elapsed().as_micros());
                     }
                     Err(e) => warn!("link: encode Request seq={seq} failed: {e}"),
                 }
@@ -271,11 +289,17 @@ fn begin_pairing(addr: &str) -> Result<PairingCtx, String> {
     let mut conn = ClientConnection::new(config, server_name)
         .map_err(|e| format!("rustls ClientConnection: {e}"))?;
 
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tcp_connect_start addr={addr}");
     let mut tcp = TcpStream::connect(addr).map_err(|e| format!("TCP connect: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tcp_connect_done addr={addr} duration_us={}", phase.elapsed().as_micros());
     tcp.set_nodelay(true).ok();
 
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tls_handshake_start addr={addr}");
     conn.complete_io(&mut tcp)
         .map_err(|e| format!("TLS handshake: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tls_handshake_done addr={addr} duration_us={}", phase.elapsed().as_micros());
 
     let server_cert_der = captured_cert
         .lock()
@@ -468,6 +492,8 @@ fn spawn_reader(
                     }
                 };
 
+                let decrypt_started = Instant::now();
+                log::trace!(target: "mkp_startup", "event=socket_read bytes={}", ciphertext.len());
                 let decrypt_err = {
                     let mut c = match conn.lock() {
                         Ok(g) => g,
@@ -523,6 +549,7 @@ fn spawn_reader(
                     }
                     err
                 };
+                log::trace!(target: "mkp_startup", "event=decrypt_done buffered_bytes={} duration_us={}", plaintext.len(), decrypt_started.elapsed().as_micros());
                 if let Some(e) = decrypt_err {
                     close(Some(e), &close_tx);
                     return;
@@ -541,10 +568,12 @@ fn emit_pending_frames(
     loop {
         match mode {
             Mode::Client => {
+                let decode_started = Instant::now();
                 match codec::try_decode::<Response>(buf)
                     .map_err(|e| format!("decode Response: {e}"))?
                 {
                     Some((resp, used)) => {
+                        log::trace!(target: "mkp_startup", "event=frame_decoded seq={} task={:?} msg={} bytes={used} duration_us={}", resp.seq, resp.task_id, resp.msg.diagnostic_name(), decode_started.elapsed().as_micros());
                         buf.drain(..used);
                         if event_tx.send(LinkEvent::Frame(Box::new(resp))).is_err() {
                             return Err("runtime dropped event receiver".into());
@@ -602,13 +631,19 @@ fn do_probe(addr: &str) -> Result<String, String> {
     let server_name = ServerName::try_from("mkplay").expect("valid server name");
     let mut conn = ClientConnection::new(config, server_name)
         .map_err(|e| format!("rustls ClientConnection: {e}"))?;
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tcp_connect_start addr={addr}");
     let mut tcp = TcpStream::connect(addr).map_err(|e| format!("TCP connect: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tcp_connect_done addr={addr} duration_us={}", phase.elapsed().as_micros());
     tcp.set_nodelay(true).ok();
     // Setting a read timeout keeps a hung server from wedging the
     // manager thread forever; 5 s is plenty for a LAN handshake.
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(5)));
+    let phase = Instant::now();
+    log::trace!(target: "mkp_startup", "event=tls_handshake_start addr={addr}");
     conn.complete_io(&mut tcp)
         .map_err(|e| format!("TLS handshake: {e}"))?;
+    log::trace!(target: "mkp_startup", "event=tls_handshake_done addr={addr} duration_us={}", phase.elapsed().as_micros());
 
     let cert_der = captured
         .lock()

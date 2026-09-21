@@ -31,6 +31,7 @@ impl RequestQueue {
     pub fn push(&mut self, msg: ClientMsg, task_id: Option<TaskId>) -> u64 {
         self.next_seq = self.next_seq.saturating_add(1).max(1);
         let seq = self.next_seq;
+        log::trace!(target: "mkp_startup", "event=request_queued seq={seq} task={task_id:?} msg={} depth={}", msg.diagnostic_name(), self.pending.len() + 1);
         self.pending.push_back(Pending { seq, task_id, msg });
         seq
     }
@@ -46,7 +47,11 @@ impl RequestQueue {
     /// Pop the front pending request if any. Used by execute when the
     /// link is ready to take one.
     pub fn pop_front(&mut self) -> Option<Pending> {
-        self.pending.pop_front()
+        let pending = self.pending.pop_front();
+        if let Some(p) = &pending {
+            log::trace!(target: "mkp_startup", "event=request_dequeued seq={} task={:?} msg={} remaining={}", p.seq, p.task_id, p.msg.diagnostic_name(), self.pending.len());
+        }
+        pending
     }
 
     /// Drop everything queued. Used when the link disconnects —
