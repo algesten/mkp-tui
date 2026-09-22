@@ -1,5 +1,7 @@
 # Unreleased
 
+* Add opt-in TRACE startup diagnostics and a repeatable client startup benchmark
+
 # 1.1.0
 
 * Reconnect automatically after connection loss, restoring the same server,

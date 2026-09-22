@@ -19,6 +19,8 @@ pub struct AppState {
     /// without needing `&mut`.
     pub left_offset: Cell<usize>,
     pub middle_offset: Cell<usize>,
+    /// Last rendered middle-pane body height, used by TRACE readiness diagnostics.
+    pub middle_height: Cell<usize>,
     pub queue_offset: Cell<usize>,
     /// Parallel stacks for the middle pane's scroll offset, mirroring
     /// the runtime's `history.back` / `history.forward`. The input

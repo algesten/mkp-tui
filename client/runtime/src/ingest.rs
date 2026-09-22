@@ -20,11 +20,21 @@ use crate::drivers::Drivers;
 use crate::sources::Sources;
 
 pub fn run(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
+    let stage_started = std::time::Instant::now();
     ingest_discovery(&mut sources.discovery, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=ingest stage=ingest_discovery duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     ingest_credentials(&mut sources.credentials, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=ingest stage=ingest_credentials duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     ingest_link(sources, drivers, peer);
+    log::trace!(target: "mkp_startup", "event=stage phase=ingest stage=ingest_link duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     ingest_persist(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=ingest stage=ingest_persist duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     drivers.clipboard.process(&mut sources.clipboard);
+    log::trace!(target: "mkp_startup", "event=stage phase=ingest stage=drivers.clipboard.process duration_us={}", stage_started.elapsed().as_micros());
 }
 
 fn ingest_discovery(discovery: &mut mkpclient_state_discovery::Discovery, drivers: &Drivers) {
@@ -98,6 +108,12 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
             }
             LinkEvent::Frame(response) => {
                 let response = *response;
+                let started = std::time::Instant::now();
+                log_response_details(&response);
+                let seq = response.seq;
+                let task = response.task_id;
+                let msg = response.msg.diagnostic_name();
+                log::trace!(target: "mkp_startup", "event=ingest_frame_start seq={seq} task={task:?} msg={msg}");
                 if response.seq == 0 {
                     fold_broadcast(sources, response);
                 } else {
@@ -106,6 +122,7 @@ fn ingest_link(sources: &mut Sources, drivers: &Drivers, peer: &Peer) {
                         sources.responses.insert(response.seq, response.msg);
                     }
                 }
+                log::trace!(target: "mkp_startup", "event=ingest_frame_done seq={seq} task={task:?} msg={msg} duration_us={}", started.elapsed().as_micros());
             }
             LinkEvent::PairingReady {
                 server_cert_pem,
@@ -666,6 +683,78 @@ fn ingest_keybindings_persist_event(sources: &mut Sources, event: &PersistEvent)
             true
         }
         _ => false,
+    }
+}
+
+// Keep streamed payloads out of trace output: sizes and correlation IDs
+// are sufficient to distinguish first data, partial data and completion.
+fn log_response_details(response: &Response) {
+    if !log::log_enabled!(target: "mkp_startup", log::Level::Trace) {
+        return;
+    }
+    let seq = response.seq;
+    let task = response.task_id;
+    match &response.msg {
+        ServerMsg::StateUpdate(p) => {
+            log::trace!(target: "mkp_startup", "event=state_update seq={seq} playback={:?} song_id={:?} position={} queue_index={:?}", p.playback, p.now_playing.as_ref().map(|s| &s.id), p.position, p.queue_index)
+        }
+        ServerMsg::ListBegin {
+            target,
+            total,
+            focus,
+        } => {
+            log::trace!(target: "mkp_startup", "event=list_begin seq={seq} task={task:?} target={target:?} total={total} focus={focus}")
+        }
+        ServerMsg::ListChunk {
+            target,
+            offset,
+            songs,
+        } => {
+            log::trace!(target: "mkp_startup", "event=list_chunk seq={seq} task={task:?} target={target:?} offset={offset} count={}", songs.len())
+        }
+        ServerMsg::QueueChunk {
+            queue_id,
+            offset,
+            entries,
+        } => {
+            log::trace!(target: "mkp_startup", "event=queue_chunk seq={seq} task={task:?} queue_id={queue_id} offset={offset} count={}", entries.len())
+        }
+        ServerMsg::QueueDelta {
+            queue_id, version, ..
+        } => {
+            log::trace!(target: "mkp_startup", "event=queue_delta seq={seq} queue_id={queue_id} version={version}")
+        }
+        ServerMsg::QueueCatchUp { queue_id, deltas } => {
+            log::trace!(target: "mkp_startup", "event=queue_catch_up seq={seq} queue_id={queue_id} count={} last_version={:?}", deltas.len(), deltas.last().map(|(v, _)| v))
+        }
+        ServerMsg::Playlists { playlists } => {
+            log::trace!(target: "mkp_startup", "event=playlists seq={seq} task={task:?} count={}", playlists.len())
+        }
+        ServerMsg::TaskStarted { task_id, .. } => {
+            log::trace!(target: "mkp_startup", "event=task_started task={task_id}")
+        }
+        ServerMsg::TaskCompleted { task_id } => {
+            log::trace!(target: "mkp_startup", "event=task_completed task={task_id} envelope_task={task:?}")
+        }
+        ServerMsg::TaskFailed { task_id, message } => {
+            log::trace!(target: "mkp_startup", "event=task_failed task={task_id} envelope_task={task:?} error={message:?}")
+        }
+        ServerMsg::Error { message } => {
+            log::trace!(target: "mkp_startup", "event=response_error seq={seq} task={task:?} error={message:?}")
+        }
+        ServerMsg::AlbumDetail { songs, .. } => {
+            log::trace!(target: "mkp_startup", "event=album_detail seq={seq} task={task:?} songs={}", songs.len())
+        }
+        ServerMsg::ArtistDetail { top_songs, .. } => {
+            log::trace!(target: "mkp_startup", "event=artist_detail seq={seq} task={task:?} songs={}", top_songs.len())
+        }
+        ServerMsg::ArtistAlbumsChunk { albums, .. } => {
+            log::trace!(target: "mkp_startup", "event=artist_albums seq={seq} task={task:?} count={}", albums.len())
+        }
+        ServerMsg::SimilarArtists { artists, .. } => {
+            log::trace!(target: "mkp_startup", "event=similar_artists seq={seq} task={task:?} count={}", artists.len())
+        }
+        _ => {}
     }
 }
 

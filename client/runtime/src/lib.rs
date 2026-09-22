@@ -38,7 +38,7 @@ pub use dispatch::{
 };
 pub use drivers::{
     clipboard_trace, credentials_trace, discovery_trace, link_trace, persist_trace, Drivers,
-    NativeMarker, RuntimeTrace, Trace,
+    LoggingTrace, NativeMarker, RuntimeTrace, Trace,
 };
 pub use mkpclient_core::Notifier;
 pub use mkproto::{ClientMsg, Peer, PlayState, PlaybackState, Song};
@@ -150,9 +150,14 @@ impl Runtime {
     /// fires, or the timeout elapses. Returns immediately if a wake
     /// is already queued.
     pub fn wait_for_wake(&self, timeout: Duration) {
+        log::trace!(target: "mkp_startup", "event=wait_start timeout_us={}", timeout.as_micros());
         match self.wake_rx.recv_timeout(timeout) {
-            Ok(()) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(()) => {
+                log::trace!(target: "mkp_startup", "event=wait_done reason=notification");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                log::trace!(target: "mkp_startup", "event=wait_done reason=deadline");
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 debug!("runtime: all wake senders dropped");
             }

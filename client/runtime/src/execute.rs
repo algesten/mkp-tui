@@ -394,35 +394,79 @@ pub fn run(sources: &mut Sources, drivers: &Drivers) {
     // Order: apply_connect first (writes intent), then apply_link
     // (reads intent, drives the link driver). Other lifecycle
     // applies don't depend on link state for this tick.
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::connect::apply_connect(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=connect::apply_connect duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     apply_link(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=apply_link duration_us={}", stage_started.elapsed().as_micros());
     // apply_backend runs after apply_link so it sees the current
     // link.phase / link.target post-execute (the link driver writes
     // intent state synchronously inside its trampoline).
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::backend::apply_backend(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=backend::apply_backend duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::server_errors::apply_server_errors(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=server_errors::apply_server_errors duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::search_reopen::apply_search_reopen(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=search_reopen::apply_search_reopen duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::cursor_snap::apply_cursor_snap(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=cursor_snap::apply_cursor_snap duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::cursor_clamp::apply_middle_cursor_clamp(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=cursor_clamp::apply_middle_cursor_clamp duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::cursor_clamp::apply_queue_cursor_clamp(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=cursor_clamp::apply_queue_cursor_clamp duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::cursor_clamp::apply_left_cursor_clamp(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=cursor_clamp::apply_left_cursor_clamp duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::cursor_clamp::apply_action_modal_clamp(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=cursor_clamp::apply_action_modal_clamp duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::pending_add::apply_pending_add(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=pending_add::apply_pending_add duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::lost_modal::apply_lost_modal(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=lost_modal::apply_lost_modal duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::restore::apply_restore(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=restore::apply_restore duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::viewing_playlist::apply_viewing_playlist(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=viewing_playlist::apply_viewing_playlist duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::playlists_refetch::apply_playlists_refetch(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=playlists_refetch::apply_playlists_refetch duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::playlists_refetch::apply_playlist_tracks_refetch(sources);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=playlists_refetch::apply_playlist_tracks_refetch duration_us={}", stage_started.elapsed().as_micros());
     // Runs after restore so the just-applied `history.mode` gets
     // mirrored to disk on the same tick.
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::view_persist::apply_view_persist(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=view_persist::apply_view_persist duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::last_add_persist::apply_last_add_persist(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=last_add_persist::apply_last_add_persist duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::search_history_push::apply_search_history_push(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=search_history_push::apply_search_history_push duration_us={}", stage_started.elapsed().as_micros());
     // Drain `clipboard.pending` into a worker Cmd; toast lifecycle
     // fires once per outcome on the next tick after ingest.
+    let stage_started = std::time::Instant::now();
     drivers.clipboard.execute(&mut sources.clipboard);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=drivers.clipboard.execute duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     crate::lifecycle::clipboard_toast::apply_clipboard_toast(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=clipboard_toast::apply_clipboard_toast duration_us={}", stage_started.elapsed().as_micros());
+    let stage_started = std::time::Instant::now();
     drain_send_queue(sources, drivers);
+    log::trace!(target: "mkp_startup", "event=stage phase=execute stage=drain_send_queue duration_us={}", stage_started.elapsed().as_micros());
 }
 
 fn apply_link(sources: &mut Sources, drivers: &Drivers) {

@@ -28,9 +28,6 @@ use ratatui::Terminal;
 
 use mkpclient_tui::app::AppState;
 
-struct NoopTrace;
-impl mkpclient_runtime::Trace for NoopTrace {}
-
 #[derive(Parser, Debug)]
 #[command(
     name = "mkp",
@@ -66,8 +63,10 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> io::Result<()> {
+    let started = std::time::Instant::now();
+    env_logger_init(started);
     let cli = Cli::parse();
-    env_logger_init();
+    log::trace!(target: "mkp_startup", "event=start pick={} version={} profile={} os={} arch={}", cli.pick, env!("MKP_VERSION"), if cfg!(debug_assertions) { "debug" } else { "release" }, std::env::consts::OS, std::env::consts::ARCH);
 
     if let Some(command) = cli.command {
         if cli.pick {
@@ -86,14 +85,20 @@ fn try_main() -> io::Result<()> {
         ));
     }
 
-    let trace: Arc<dyn mkpclient_runtime::Trace> = Arc::new(NoopTrace);
+    let trace: Arc<dyn mkpclient_runtime::Trace> =
+        Arc::new(mkpclient_runtime::LoggingTrace::default());
+    let phase = std::time::Instant::now();
     let peer = Peer {
         user: std::env::var("USER").unwrap_or_else(|_| "mkptui".into()),
         host: sysinfo::System::host_name().unwrap_or_else(|| "mkptui-host".into()),
     };
+    log::trace!(target: "mkp_startup", "event=peer_identity duration_us={}", phase.elapsed().as_micros());
+    let phase = std::time::Instant::now();
     let mut rt =
         runtime_desktop::start_with_options(trace, peer, RuntimeOptions { pick: cli.pick });
 
+    log::trace!(target: "mkp_startup", "event=runtime_created duration_us={}", phase.elapsed().as_micros());
+    let phase = std::time::Instant::now();
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     execute!(
@@ -107,6 +112,7 @@ fn try_main() -> io::Result<()> {
 
     let input = input::spawn_input_thread(rt.notifier());
 
+    log::trace!(target: "mkp_startup", "event=terminal_input_ready duration_us={}", phase.elapsed().as_micros());
     let mut app = AppState::default();
     // Without `--pick`, `runtime_desktop::start_with_options` issued
     // `LoadLastServer`; the result lands via `ingest_persist` and
@@ -136,6 +142,7 @@ fn run_loop<B: ratatui::backend::Backend>(
     // `tui::render::*` stay where they are.
     let paint_driver = TuiPaintDriver::new(Arc::new(PaintNoopTrace));
     let mut paint_state = PaintState::default();
+    let mut previous_view = String::new();
 
     loop {
         // 1. Drain UI input into dispatch.
@@ -158,22 +165,52 @@ fn run_loop<B: ratatui::backend::Backend>(
         // server-error surfacing, cursor snap, deferred add,
         // saved-view restore) runs inside `tick`'s execute step —
         // see `runtime::lifecycle`.
+        let tick_started = std::time::Instant::now();
         rt.tick();
+        log::trace!(target: "mkp_startup", "event=tick frame={} duration_us={}", app.tick.wrapping_add(1), tick_started.elapsed().as_micros());
         app.tick = app.tick.wrapping_add(1);
 
         // 3. Render. The paint driver brackets the actual draw with
         //    its trace + in-flight bookkeeping.
         let mut draw_err: Option<io::Error> = None;
+        let draw_started = std::time::Instant::now();
         paint_driver.execute(
             || {
-                if let Err(e) = terminal.draw(|frame| render::draw(frame, app, rt)) {
+                if let Err(e) = terminal.draw(|frame| {
+                    let render_started = std::time::Instant::now();
+                    render::draw(frame, app, rt);
+                    log::trace!(target: "mkp_startup", "event=render frame={} duration_us={}", app.tick, render_started.elapsed().as_micros());
+                }) {
                     draw_err = Some(io::Error::other(format!("ratatui draw: {e}")));
                 }
             },
             &mut paint_state,
         );
+        log::trace!(target: "mkp_startup", "event=draw frame={} duration_us={}", app.tick, draw_started.elapsed().as_micros());
         if let Some(e) = draw_err {
             return Err(e);
+        }
+        mkpclient_tui::startup::trace_after_draw(&rt.sources, app);
+        if log::log_enabled!(target: "mkp_startup", log::Level::Trace) {
+            let s = &rt.sources;
+            let view = format!("link={:?} credentials_loaded={} discovered={} preferred={:?} backend={:?} state_received={} playback={:?} now_playing={} playlists_loaded={} playlists={} restored={} mode={:?} playlist_rows={}/{} playlist_pending={:?} search_first={} search_complete={} search_rows={} queue_rows={} queue_expected={:?} queue_version={} queue_index={:?} pending_requests={} persist_pending={:?}",
+                s.link.phase, s.credentials.loaded, s.discovery.servers.len(), s.session.preferred_server,
+                s.server.backend, s.server.play.is_some(), s.server.play.as_ref().map(|p| &p.playback),
+                s.server.play.as_ref().is_some_and(|p| p.now_playing.is_some()),
+                s.playlists.loaded, s.playlists.items.len(), s.session.auto_restored_view,
+                match &s.history.mode {
+                    mkpclient_state_ui_history::MiddleMode::PlaylistSongs => "playlist",
+                    mkpclient_state_ui_history::MiddleMode::SearchResults { .. } => "search",
+                    mkpclient_state_ui_history::MiddleMode::AlbumDetail { .. } => "album",
+                    mkpclient_state_ui_history::MiddleMode::ArtistDetail { .. } => "artist",
+                },
+                s.playlist_tracks.songs.iter().filter(|s| s.is_some()).count(), s.playlist_tracks.total,
+                s.playlist_tracks.pending_task, s.search.first_page_received, s.search.completed, s.search.songs.len() + s.search.albums.len() + s.search.artists.len(), s.queue.items.len(), s.queue.expected_total, s.queue.version,
+                s.queue.current_index, s.requests.pending.len(), s.persist.loads_in_flight);
+            if view != previous_view {
+                log::trace!(target: "mkp_startup", "event=view_drawn frame={} {view}", app.tick);
+                previous_view = view;
+            }
         }
 
         // 4. Block until something happens. The runtime computes
@@ -182,7 +219,9 @@ fn run_loop<B: ratatui::backend::Backend>(
         //    (spinner cadence, toast expiry, preview timeout, …)
         //    folds itself into that one min-fold. Input + driver
         //    events nudge the wake channel and unblock immediately.
+        let wait_started = std::time::Instant::now();
         rt.wait_for_next_deadline();
+        log::trace!(target: "mkp_startup", "event=wake frame={} wait_us={}", app.tick, wait_started.elapsed().as_micros());
     }
 }
 
@@ -212,12 +251,23 @@ fn suspend<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
 }
 
 // env_logger writes to stderr — redirect in your shell
-// (`RUST_LOG=info mkptui 2>/tmp/mkptui.log`) so it doesn't scramble
+// (`RUST_LOG=mkp_startup=trace mkp 2>/tmp/mkp.log`) so it doesn't scramble
 // the TUI. Silent when RUST_LOG is unset.
-fn env_logger_init() {
+fn env_logger_init(started: std::time::Instant) {
     if std::env::var_os("RUST_LOG").is_some() {
         let _ = env_logger::Builder::from_default_env()
-            .format_timestamp_millis()
+            .format(move |buf, record| {
+                writeln!(
+                    buf,
+                    "{} +{:012.3}ms {:5} [{}] {}: {}",
+                    buf.timestamp_millis(),
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    record.level(),
+                    std::thread::current().name().unwrap_or("main"),
+                    record.target(),
+                    record.args()
+                )
+            })
             .try_init();
     }
 }

@@ -48,7 +48,23 @@ pub fn spawn(trace: Arc<dyn Trace>, notify: Notifier) -> (PersistDriver, Persist
 
 fn worker_loop(rx: Receiver<PersistCmd>, tx: Sender<PersistEvent>, notify: Notifier) {
     while let Ok(cmd) = rx.recv() {
+        let phase = std::time::Instant::now();
+        let op = match &cmd {
+            PersistCmd::LoadKeybindings => "LoadKeybindings",
+            PersistCmd::SaveKeybindings { .. } => "SaveKeybindings",
+            PersistCmd::LoadLastServer => "LoadLastServer",
+            PersistCmd::SaveLastServer { .. } => "SaveLastServer",
+            PersistCmd::LoadView { .. } => "LoadView",
+            PersistCmd::SaveView { .. } => "SaveView",
+            PersistCmd::ClearView { .. } => "ClearView",
+            PersistCmd::LoadSearchHistory { .. } => "LoadSearchHistory",
+            PersistCmd::PushSearchHistory { .. } => "PushSearchHistory",
+            PersistCmd::LoadLastAddPlaylist { .. } => "LoadLastAddPlaylist",
+            PersistCmd::SaveLastAddPlaylist { .. } => "SaveLastAddPlaylist",
+        };
+        log::trace!(target: "mkp_startup", "event=persist_worker_start op={op}");
         let event = handle(cmd);
+        log::trace!(target: "mkp_startup", "event=persist_worker_done op={op} duration_us={}", phase.elapsed().as_micros());
         if let Some(ev) = event {
             if tx.send(ev).is_err() {
                 return;

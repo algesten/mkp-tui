@@ -278,3 +278,70 @@ pub struct Response {
     pub task_id: Option<TaskId>,
     pub msg: ServerMsg,
 }
+
+impl ClientMsg {
+    /// Payload-free message name for diagnostic correlation.
+    pub fn diagnostic_name(&self) -> &'static str {
+        match self {
+            Self::Hello { .. } => "Hello",
+            Self::Search { .. } => "Search",
+            Self::GetAlbumDetail { .. } => "GetAlbumDetail",
+            Self::GetArtistDetail { .. } => "GetArtistDetail",
+            Self::Play { .. } => "Play",
+            Self::SetRepeat { .. } => "SetRepeat",
+            Self::SetPaused { .. } => "SetPaused",
+            Self::Skip => "Skip",
+            Self::Previous => "Previous",
+            Self::Seek { .. } => "Seek",
+            Self::SeekRelative { .. } => "SeekRelative",
+            Self::SkipToQueueEntry { .. } => "SkipToQueueEntry",
+            Self::RemoveFromQueue { .. } => "RemoveFromQueue",
+            Self::GetQueueSince { .. } => "GetQueueSince",
+            Self::GetPlaylists => "GetPlaylists",
+            Self::GetPlaylist { .. } => "GetPlaylist",
+            Self::ViewingPlaylist { .. } => "ViewingPlaylist",
+            Self::Navigate { .. } => "Navigate",
+            Self::AddToPlaylist { .. } => "AddToPlaylist",
+            Self::PlaySongs { .. } => "PlaySongs",
+            Self::RemoveFromPlaylist { .. } => "RemoveFromPlaylist",
+            Self::CreatePlaylist { .. } => "CreatePlaylist",
+            Self::DeletePlaylist { .. } => "DeletePlaylist",
+            Self::RenamePlaylist { .. } => "RenamePlaylist",
+            Self::GetState => "GetState",
+            Self::Ping => "Ping",
+        }
+    }
+}
+
+impl ServerMsg {
+    /// Payload-free message name for diagnostic correlation.
+    pub fn diagnostic_name(&self) -> &'static str {
+        match self {
+            Self::Search(..) => "Search",
+            Self::SearchMore(..) => "SearchMore",
+            Self::AlbumDetail { .. } => "AlbumDetail",
+            Self::ArtistDetail { .. } => "ArtistDetail",
+            Self::StateUpdate(..) => "StateUpdate",
+            Self::ListBegin { .. } => "ListBegin",
+            Self::ListChunk { .. } => "ListChunk",
+            Self::QueueChunk { .. } => "QueueChunk",
+            Self::QueueDelta { .. } => "QueueDelta",
+            Self::QueueCatchUp { .. } => "QueueCatchUp",
+            Self::Playlists { .. } => "Playlists",
+            Self::PlaylistTrackCount { .. } => "PlaylistTrackCount",
+            Self::ArtistAlbumsChunk { .. } => "ArtistAlbumsChunk",
+            Self::SimilarArtists { .. } => "SimilarArtists",
+            Self::Activity { .. } => "Activity",
+            Self::BackendChanged { .. } => "BackendChanged",
+            Self::PlaylistMutated { .. } => "PlaylistMutated",
+            Self::PlaylistCreated { .. } => "PlaylistCreated",
+            Self::TaskStarted { .. } => "TaskStarted",
+            Self::TaskCompleted { .. } => "TaskCompleted",
+            Self::TaskFailed { .. } => "TaskFailed",
+            Self::ServerShutdown => "ServerShutdown",
+            Self::Ok => "Ok",
+            Self::Error { .. } => "Error",
+            Self::Pong => "Pong",
+        }
+    }
+}

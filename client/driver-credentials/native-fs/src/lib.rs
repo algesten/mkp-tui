@@ -43,6 +43,13 @@ pub fn spawn(trace: Arc<dyn Trace>, notify: Notifier) -> (CredDriver, CredNative
 
 fn worker_loop(rx: Receiver<CredCmd>, tx: Sender<CredEvent>, notify: Notifier) {
     while let Ok(cmd) = rx.recv() {
+        let phase = std::time::Instant::now();
+        let op = match &cmd {
+            CredCmd::Load => "load",
+            CredCmd::Save(_) => "save",
+            CredCmd::Delete { .. } => "delete",
+        };
+        log::trace!(target: "mkp_startup", "event=credentials_worker_start op={op}");
         let event = match cmd {
             CredCmd::Load => match load_all() {
                 Ok(entries) => CredEvent::Loaded(entries),
@@ -64,6 +71,7 @@ fn worker_loop(rx: Receiver<CredCmd>, tx: Sender<CredEvent>, notify: Notifier) {
             }
         };
 
+        log::trace!(target: "mkp_startup", "event=credentials_worker_done op={op} duration_us={}", phase.elapsed().as_micros());
         if tx.send(event).is_err() {
             return;
         }

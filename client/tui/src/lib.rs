@@ -8,3 +8,5 @@ pub mod cli;
 pub mod history_offsets;
 pub mod input;
 pub mod render;
+
+pub mod startup;
