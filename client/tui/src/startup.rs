@@ -213,6 +213,62 @@ mod tests {
     }
 
     #[test]
+    fn artist_metadata_with_only_pending_related_rows_is_not_visible_ready() {
+        let (mut s, app) = ready();
+        s.history.mode = MiddleMode::ArtistDetail {
+            artist_id: "a".into(),
+            artist_name: "Artist".into(),
+            awaiting_seq: Some(9),
+        };
+        s.responses.insert(
+            9,
+            ServerMsg::ArtistDetail {
+                artist: mkproto::Artist {
+                    id: "a".into(),
+                    name: "Artist".into(),
+                    detail: None,
+                    url: None,
+                    artwork_url_small: None,
+                    artwork_url_large: None,
+                },
+                top_songs: vec![],
+            },
+        );
+        // The actual render model contains only the related-artists loading
+        // placeholder: neither content rows nor a confirmed empty result.
+        use mkpclient_runtime::views::{
+            artist_detail_body_model, ArtistDetailExtrasInput, ArtistDetailResponseInput,
+            ArtistDetailRow, ArtistDetailState,
+        };
+        let model = artist_detail_body_model(
+            ArtistDetailResponseInput::new(Some(9), &s.responses),
+            ArtistDetailExtrasInput::new(&s.artist_extras),
+            0,
+            true,
+            70,
+            5,
+        );
+        let ArtistDetailState::Loaded(loaded) = model.state else {
+            panic!("artist metadata should render");
+        };
+        assert!(loaded.item_visual_indices.is_empty());
+        assert!(loaded
+            .rows
+            .iter()
+            .any(|r| matches!(r, ArtistDetailRow::SimilarLoading)));
+        assert!(
+            !observe(&s, &app).visible_view,
+            "metadata plus Loading… must not latch the visible-row milestone"
+        );
+
+        s.artist_extras.set_similar("a".into(), vec![]);
+        assert!(
+            observe(&s, &app).visible_view,
+            "confirmed empty artist view is ready"
+        );
+    }
+
+    #[test]
     fn missing_response_is_not_an_empty_album() {
         let (mut s, app) = ready();
         s.history.mode = MiddleMode::AlbumDetail {
