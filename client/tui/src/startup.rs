@@ -79,25 +79,31 @@ pub fn observe(s: &Sources, app: &AppState) -> Observation {
             artist_id,
             ..
         } => {
-            let songs = awaiting_seq
+            let initial_rows = awaiting_seq
                 .and_then(|seq| s.responses.by_seq.get(&seq))
                 .and_then(|r| match &**r {
-                    ServerMsg::ArtistDetail { top_songs, .. } => Some(top_songs.len()),
+                    ServerMsg::ArtistDetail { artist, top_songs } => Some(
+                        top_songs.len()
+                            + artist.detail.as_ref().map_or(0, |detail| {
+                                detail.top_albums.len() + detail.latest_albums.len()
+                            }),
+                    ),
                     _ => None,
                 });
+            let similar = s.artist_extras.similar_for(artist_id);
             let extras = s
                 .artist_extras
                 .paged_albums_for(artist_id)
                 .map_or(0, |v| v.len())
-                + s.artist_extras
-                    .similar_for(artist_id)
-                    .map_or(0, |v| v.len());
+                + similar.map_or(0, |v| v.len());
+            let rows = initial_rows.unwrap_or(0) + extras;
+            let complete = initial_rows.is_some() && similar.is_some();
             (
                 "artist",
-                songs.is_some(),
-                songs.is_some() && s.artist_extras.similar_for(artist_id).is_some(),
-                songs.unwrap_or(0) + extras,
-                songs.unwrap_or(0) + extras,
+                initial_rows.is_some() && (rows > 0 || complete),
+                complete,
+                rows,
+                rows,
             )
         }
     };
