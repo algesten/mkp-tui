@@ -82,6 +82,7 @@ impl HelpOverlayInput {
             (l, Action::ShuffleActivate),
             (l, Action::OpenActionMenu),
             (g, Action::ToggleFilter),
+            (g, Action::EnterSelectionMode),
             (l, Action::Back),
             (h, Action::OpenKeybindingsEditor),
             (h, Action::CloseHelp),
@@ -103,8 +104,8 @@ pub fn help_overlay_model(input: HelpOverlayInput) -> HelpOverlayModel {
         scroll: input.scroll,
         left: Arc::new(canonical_left_sections(h)),
         right: Arc::new(canonical_right_sections(h)),
-        configure_key: h[27].clone(),
-        close_key: h[28].clone(),
+        configure_key: h[28].clone(),
+        close_key: h[29].clone(),
     }
 }
 
@@ -127,7 +128,7 @@ fn canonical_left_sections(h: &[String]) -> Vec<HelpSection> {
             entry(&format!("{} / {}", h[3], h[4]), "Seek \u{00b1}10s"),
             entry(&format!("{} / {}", h[5], h[6]), "Seek \u{00b1}1s"),
             entry(&h[7], "Cycle repeat"),
-            entry(&h[8], "Search"),
+            entry(if h[8] == "S" { "Shift-S" } else { &h[8] }, "Search"),
             entry(&h[9], "Help"),
             entry(&h[10], "Suspend"),
             entry(&h[11], "Quit"),
@@ -155,8 +156,11 @@ fn canonical_right_sections(h: &[String]) -> Vec<HelpSection> {
                 entry(&h[22], "Play / select"),
                 entry(&h[23], "Shuffle play"),
                 entry(&h[24], "Actions menu"),
-                entry(&h[25], "Filter"),
-                entry(&h[26], "Back"),
+                entry(if h[25] == "F" { "Shift-F" } else { &h[25] }, "Filter"),
+                entry(
+                    if h[26] == "M" { "Shift-M" } else { &h[26] },
+                    "Selection mode",
+                ),
             ],
         },
     ]
@@ -200,5 +204,28 @@ mod tests {
         );
         let m = help_overlay_model(HelpOverlayInput::new(0, &keys));
         assert_eq!(m.left[0].entries[0].key, "p");
+    }
+
+    #[test]
+    fn selection_mode_uses_its_active_binding() {
+        let mut keys = Keybindings::defaults();
+        let default = help_overlay_model(HelpOverlayInput::new(0, &keys));
+        assert_eq!(default.right[1].entries[4].key, "Shift-M");
+        assert_eq!(default.right[1].entries[4].description, "Selection mode");
+
+        keys.replace(
+            KeyContext::Global,
+            Action::EnterSelectionMode,
+            mkpclient_state_ui_keybindings::KeyChord::char('v'),
+        );
+        let customized = help_overlay_model(HelpOverlayInput::new(0, &keys));
+        assert_eq!(customized.right[1].entries[4].key, "v");
+    }
+
+    #[test]
+    fn filter_shows_shift_explicitly() {
+        let model = help_overlay_model(HelpOverlayInput::new(0, &Keybindings::defaults()));
+        assert_eq!(model.right[1].entries[3].key, "Shift-F");
+        assert_eq!(model.left[0].entries[6].key, "Shift-S");
     }
 }
