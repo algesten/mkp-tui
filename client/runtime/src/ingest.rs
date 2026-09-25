@@ -312,6 +312,29 @@ fn mirror_response_into_source(sources: &mut Sources, response: &Response) -> bo
                 patch(&mut frame.mode);
             }
         }
+        ServerMsg::ArtistDetail { artist, .. } => {
+            let resolved = artist.id.as_str();
+            let seq = response.seq;
+            let patch = |mode: &mut MiddleMode| {
+                if let MiddleMode::ArtistDetail {
+                    artist_id,
+                    awaiting_seq,
+                    ..
+                } = mode
+                {
+                    if artist_id.is_empty() && *awaiting_seq == Some(seq) {
+                        *artist_id = resolved.to_string();
+                    }
+                }
+            };
+            patch(&mut sources.history.mode);
+            for frame in sources.history.back.iter_mut() {
+                patch(&mut frame.mode);
+            }
+            for frame in sources.history.forward.iter_mut() {
+                patch(&mut frame.mode);
+            }
+        }
         ServerMsg::Ok => {
             sources.pending_playlists.remove_adding_by_seq(response.seq);
             sources
@@ -804,6 +827,38 @@ mod keybindings_persist_tests {
 mod playlist_sync_tests {
     use super::*;
     use mkproto::{Playlist, PlaylistMutation, Song};
+
+    #[test]
+    fn artist_navigation_replaces_placeholder_id() {
+        let mut sources = Sources::default();
+        sources.history.mode = MiddleMode::ArtistDetail {
+            artist_id: String::new(),
+            artist_name: "Artist".into(),
+            awaiting_seq: Some(7),
+        };
+        mirror_response_into_source(
+            &mut sources,
+            &Response {
+                seq: 7,
+                task_id: None,
+                msg: ServerMsg::ArtistDetail {
+                    artist: mkproto::Artist {
+                        id: "artist-id".into(),
+                        name: "Artist".into(),
+                        detail: None,
+                        url: None,
+                        artwork_url_small: None,
+                        artwork_url_large: None,
+                    },
+                    top_songs: vec![],
+                },
+            },
+        );
+        assert!(matches!(
+            &sources.history.mode,
+            MiddleMode::ArtistDetail { artist_id, .. } if artist_id == "artist-id"
+        ));
+    }
 
     fn song(id: &str) -> Song {
         Song {

@@ -2233,6 +2233,9 @@ fn middle_activate(sources: &mut Sources) {
             }
         },
         MiddleMode::AlbumDetail { album_id, .. } => {
+            if album_id.is_empty() {
+                return;
+            }
             sources.requests.push(
                 ClientMsg::Play {
                     id: album_id.clone(),
@@ -2549,12 +2552,14 @@ fn shuffle_activate_focused(sources: &mut Sources) {
                             start_index: None,
                         })
                 }
-                MiddleMode::AlbumDetail { album_id, .. } => Some(ClientMsg::Play {
-                    id: album_id.clone(),
-                    kind: MediaKind::Album,
-                    position: QueuePosition::Shuffle,
-                    start_index: None,
-                }),
+                MiddleMode::AlbumDetail { album_id, .. } if !album_id.is_empty() => {
+                    Some(ClientMsg::Play {
+                        id: album_id.clone(),
+                        kind: MediaKind::Album,
+                        position: QueuePosition::Shuffle,
+                        start_index: None,
+                    })
+                }
                 _ => None,
             };
             if let Some(msg) = msg {
@@ -2678,6 +2683,9 @@ fn restore_saved_album(
     selected: usize,
     selected_id: Option<String>,
 ) {
+    if album_id.is_empty() {
+        return;
+    }
     let seq = sources.requests.push(
         ClientMsg::GetAlbumDetail {
             id: album_id.clone(),
@@ -2700,6 +2708,9 @@ fn restore_saved_artist(
     artist_name: String,
     selected: usize,
 ) {
+    if artist_id.is_empty() {
+        return;
+    }
     let seq = sources.requests.push(
         ClientMsg::GetArtistDetail {
             id: artist_id.clone(),
@@ -2888,6 +2899,9 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
             album_title,
             awaiting_seq,
         } => {
+            if album_id.is_empty() {
+                return None;
+            }
             let songs = queries::album_detail_songs(*awaiting_seq, sources);
             let song_id = songs
                 .and_then(|s| selected_row.and_then(|row| s.get(row).cloned()))
@@ -2905,12 +2919,17 @@ pub(crate) fn build_saved_view(sources: &Sources) -> Option<SavedView> {
             artist_id,
             artist_name,
             ..
-        } => Some(SavedView::ArtistDetail {
-            artist_id: artist_id.clone(),
-            artist_name: artist_name.clone(),
-            selected: sources.cursor.middle,
-            offset: 0,
-        }),
+        } => {
+            if artist_id.is_empty() {
+                return None;
+            }
+            Some(SavedView::ArtistDetail {
+                artist_id: artist_id.clone(),
+                artist_name: artist_name.clone(),
+                selected: sources.cursor.middle,
+                offset: 0,
+            })
+        }
         MiddleMode::SearchResults {
             term, search_type, ..
         } => {
@@ -3123,6 +3142,26 @@ mod tests {
                     && song_ids == &["first", "second"]
                     && album_ids.is_empty()
         ));
+    }
+
+    #[test]
+    fn unresolved_detail_ids_are_never_sent_or_saved() {
+        let mut sources = Sources::default();
+        sources.cursor.focus = ColumnFocus::Middle;
+        sources.history.mode = MiddleMode::AlbumDetail {
+            album_id: String::new(),
+            album_title: "Resolving".into(),
+            awaiting_seq: Some(7),
+        };
+        shuffle_activate_focused(&mut sources);
+        assert!(sources.requests.pending.is_empty());
+        assert!(build_saved_view(&sources).is_none());
+        sources.history.mode = MiddleMode::ArtistDetail {
+            artist_id: String::new(),
+            artist_name: "Resolving".into(),
+            awaiting_seq: Some(8),
+        };
+        assert!(build_saved_view(&sources).is_none());
     }
 
     #[test]

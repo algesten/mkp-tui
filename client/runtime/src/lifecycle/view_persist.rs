@@ -131,8 +131,13 @@ pub fn desired_view_key<'a>(
         ModeIdentity::Search { query, search_type } => {
             Some(SavedViewKey::Search { query, search_type })
         }
-        ModeIdentity::AlbumDetail { album_id } => Some(SavedViewKey::AlbumDetail { album_id }),
-        ModeIdentity::ArtistDetail { artist_id } => Some(SavedViewKey::ArtistDetail { artist_id }),
+        ModeIdentity::AlbumDetail { album_id } if !album_id.is_empty() => {
+            Some(SavedViewKey::AlbumDetail { album_id })
+        }
+        ModeIdentity::ArtistDetail { artist_id } if !artist_id.is_empty() => {
+            Some(SavedViewKey::ArtistDetail { artist_id })
+        }
+        ModeIdentity::AlbumDetail { .. } | ModeIdentity::ArtistDetail { .. } => None,
     }
 }
 
