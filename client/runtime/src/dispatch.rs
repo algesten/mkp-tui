@@ -1640,11 +1640,7 @@ fn playlist_picker_submit(sources: &mut Sources) {
             return;
         }
     };
-    let (song_ids, album_ids): (Vec<String>, Vec<String>) = match item.kind {
-        ActionKind::Song => (vec![item.id.to_string()], vec![]),
-        ActionKind::Album => (vec![], vec![item.id.to_string()]),
-        ActionKind::Artist => (vec![], vec![]),
-    };
+    let (song_ids, album_ids) = item.playlist_ids();
     let seq = sources.requests.push(
         ClientMsg::AddToPlaylist {
             playlist_id: pid.to_string(),
@@ -1752,10 +1748,11 @@ fn selection_action_apply(sources: &mut Sources, choice: char) {
             sources.screen = Screen::NowPlaying;
         }
         'a' if !song_ids.is_empty() => {
-            // Bulk add via PlaylistPicker — wrap the list as a synthetic
-            // ActionItem; the picker resolves the ids on confirm.
+            // Keep the selected IDs in the picker so confirmation and
+            // deferred creation submit the same snapshot.
             let label = format!("{} songs", song_ids.len());
-            let item = ActionItem::new(String::new(), ActionKind::Song, label);
+            let item = ActionItem::new(String::new(), ActionKind::Song, label)
+                .with_selected_songs(song_ids);
             sources.screen = Screen::PlaylistPicker { item, selected: 0 };
         }
         'd' => selection_action_delete(sources, ctx),
@@ -2762,11 +2759,7 @@ fn fire_deferred_add_to_playlist(sources: &mut Sources, playlist_id: String) {
     let Some(pending) = sources.picker.pending_create_add.take() else {
         return;
     };
-    let (song_ids, album_ids): (Vec<String>, Vec<String>) = match pending.item.kind {
-        ActionKind::Song => (vec![pending.item.id.to_string()], vec![]),
-        ActionKind::Album => (vec![], vec![pending.item.id.to_string()]),
-        ActionKind::Artist => (vec![], vec![]),
-    };
+    let (song_ids, album_ids) = pending.item.playlist_ids();
     let seq = sources.requests.push(
         ClientMsg::AddToPlaylist {
             playlist_id: playlist_id.clone(),
@@ -3060,6 +3053,77 @@ pub(crate) fn request_load_search_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn selected_queue_sources() -> Sources {
+        let mut sources = Sources::default();
+        for id in ["first", "second"] {
+            sources.queue.items.push_back(Arc::new(mkproto::Song {
+                unavailable: false,
+                id: id.into(),
+                title: id.into(),
+                artist_name: String::new(),
+                album_title: String::new(),
+                duration: 0.0,
+                track_number: None,
+                url: None,
+                artwork_url_small: None,
+                artwork_url_large: None,
+            }));
+        }
+        sources.selection.begin(SelectionContext::Queue);
+        sources.selection.add(0);
+        sources.selection.add(1);
+        selection_action_apply(&mut sources, 'a');
+        sources
+    }
+
+    #[test]
+    fn multi_selection_submits_all_song_ids_to_existing_playlist() {
+        let mut sources = selected_queue_sources();
+        sources.playlists.set_all(vec![mkproto::Playlist {
+            id: "playlist".into(),
+            name: "Playlist".into(),
+            description: String::new(),
+            track_count: 0,
+        }]);
+        playlist_picker_submit(&mut sources);
+        assert!(matches!(
+            &sources.requests.pending[0].msg,
+            ClientMsg::AddToPlaylist { playlist_id, song_ids, album_ids }
+                if playlist_id == "playlist"
+                    && song_ids == &["first", "second"]
+                    && album_ids.is_empty()
+        ));
+    }
+
+    #[test]
+    fn multi_selection_survives_new_playlist_creation() {
+        let mut sources = selected_queue_sources();
+        playlist_picker_submit(&mut sources);
+        let Screen::CreatePlaylist {
+            add_item: Some(_), ..
+        } = &sources.screen
+        else {
+            panic!("picker did not retain selected songs");
+        };
+        sources.screen = match std::mem::take(&mut sources.screen) {
+            Screen::CreatePlaylist { add_item, .. } => Screen::CreatePlaylist {
+                input: Arc::from("New playlist"),
+                add_item,
+            },
+            _ => unreachable!(),
+        };
+        create_playlist_submit(&mut sources);
+        sources.selection.clear();
+        fire_deferred_add_to_playlist(&mut sources, "new-id".into());
+        assert!(matches!(
+            &sources.requests.pending[1].msg,
+            ClientMsg::AddToPlaylist { playlist_id, song_ids, album_ids }
+                if playlist_id == "new-id"
+                    && song_ids == &["first", "second"]
+                    && album_ids.is_empty()
+        ));
+    }
 
     #[test]
     fn rapid_next_presses_are_all_queued() {

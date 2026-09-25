@@ -152,6 +152,8 @@ pub struct ActionItem {
     pub id: Arc<str>,
     pub kind: ActionKind,
     pub label: Arc<str>,
+    /// Snapshot of a multi-selection carried through the playlist picker.
+    pub selected_song_ids: Option<Vec<String>>,
     /// Streaming URL (used for Copy Link).
     pub url: Option<Arc<str>>,
     /// For songs: the album id (if known) used by Go-to-Album.
@@ -179,6 +181,7 @@ impl ActionItem {
             id: Arc::from(id),
             kind,
             label: Arc::from(label),
+            selected_song_ids: None,
             url: None,
             album_id: None,
             artist_id: None,
@@ -195,6 +198,22 @@ impl ActionItem {
         self.view_index = Some(view_index);
         self.origin = ActionOrigin::PlaylistSongs;
         self
+    }
+
+    pub fn with_selected_songs(mut self, song_ids: Vec<String>) -> Self {
+        self.selected_song_ids = Some(song_ids);
+        self
+    }
+
+    pub fn playlist_ids(&self) -> (Vec<String>, Vec<String>) {
+        if let Some(song_ids) = &self.selected_song_ids {
+            return (song_ids.clone(), vec![]);
+        }
+        match self.kind {
+            ActionKind::Song => (vec![self.id.to_string()], vec![]),
+            ActionKind::Album => (vec![], vec![self.id.to_string()]),
+            ActionKind::Artist => (vec![], vec![]),
+        }
     }
 
     pub fn with_origin(mut self, origin: ActionOrigin) -> Self {
